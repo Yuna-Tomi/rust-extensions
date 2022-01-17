@@ -42,7 +42,7 @@ pub enum EventType {
     /// Statistics
     Stats,
     /// Out of memory
-    OOM,
+    Oom,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,7 +56,7 @@ pub struct Event {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Stats {
-    pub cpu: CPU,
+    pub cpu: Cpu,
     pub memory: Memory,
     pub pids: Pids,
     #[serde(rename = "blkio")]
@@ -131,7 +131,7 @@ pub struct Throttling {
 
 /// Each members represents time in nanoseconds
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CPUUsage {
+pub struct CpuUsage {
     /// Total CPU time consumed
     pub total: Option<u64>,
     /// Total CPU time consumed per core
@@ -143,7 +143,7 @@ pub struct CPUUsage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CPU {
+pub struct Cpu {
     pub usage: Option<u64>,
     pub throttling: Option<Throttling>,
 }

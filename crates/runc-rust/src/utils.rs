@@ -18,6 +18,8 @@ use crate::error::Error;
 use path_absolutize::*;
 use std::env;
 use std::path::{Path, PathBuf};
+use tempfile::{Builder, NamedTempFile};
+use uuid::Uuid;
 
 // constants for flags
 pub const ALL: &str = "--all";
@@ -47,7 +49,7 @@ pub fn abs_path_buf(path: impl AsRef<Path>) -> Result<PathBuf, Error> {
     Ok(path
         .as_ref()
         .absolutize()
-        .map_err(|e| Error::InvalidPathError(e))?
+        .map_err(Error::InvalidPathError)?
         .to_path_buf())
 }
 
@@ -56,6 +58,23 @@ pub fn abs_string(path: impl AsRef<Path>) -> Result<String, Error> {
         .to_string_lossy()
         .parse::<String>()
         .unwrap())
+}
+
+pub fn make_temp_file_in_runtime_dir() -> Result<(NamedTempFile, String), Error> {
+    let file_name = env::var_os("XDG_RUNTIME_DIR")
+        .map(|runtime_dir| {
+            format!(
+                "{}/runc-process-{}",
+                runtime_dir.to_string_lossy().parse::<String>().unwrap(),
+                Uuid::new_v4(),
+            )
+        })
+        .ok_or_else(|| Error::SpecFilePathError)?;
+    let mut temp_file = Builder::new()
+        .prefix(&file_name)
+        .tempfile()
+        .map_err(Error::SpecFileCreationError)?;
+    Ok((temp_file, file_name))
 }
 
 pub fn filter_env(input: &[String], names: &[String]) -> Vec<String> {

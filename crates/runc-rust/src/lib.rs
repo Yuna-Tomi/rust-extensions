@@ -38,13 +38,16 @@ use crate::container::Container;
 use crate::error::Error;
 use crate::events::{Event, Stats};
 use crate::options::*;
+use crate::specs::{LinuxResources, Process};
 use crate::utils::{
     DEBUG, DEFAULT_COMMAND, JSON, LOG, LOG_FORMAT, ROOT, ROOTLESS, SYSTEMD_CGROUP, TEXT,
 };
 use std::fmt::{self, Display};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
+use tempfile::NamedTempFile;
 use tokio::process::Command;
 use tokio::time;
 
@@ -55,6 +58,7 @@ pub mod events;
 pub mod monitor;
 pub mod options;
 pub mod specs;
+mod stream;
 mod utils;
 
 pub mod api {
@@ -289,12 +293,12 @@ impl Runc {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| Error::ProcessSpawnError(e))?;
+            .map_err(Error::ProcessSpawnError)?;
 
         let result = time::timeout(self.timeout, proc.wait_with_output())
             .await
-            .map_err(|e| Error::CommandTimeoutError(e))?
-            .map_err(|e| Error::CommandError(e))?;
+            .map_err(Error::CommandTimeoutError)?
+            .map_err(Error::CommandError)?;
 
         let status = result.status;
         let stdout = String::from_utf8(result.stdout).unwrap();
@@ -328,7 +332,7 @@ impl Runc {
     pub async fn create(
         &self,
         id: &str,
-        bundle: &PathBuf,
+        bundle: impl AsRef<Path>,
         opts: Option<CreateOpts>,
     ) -> Result<(), Error> {
         let mut args = vec![
@@ -358,8 +362,27 @@ impl Runc {
         Err(Error::UnimplementedError("events".to_string()))
     }
 
-    pub async fn exec(&self, id: &str, opts: Option<ExecOpts>) -> Result<(), Error> {
-        Err(Error::UnimplementedError("exec".to_string()))
+    pub async fn exec(
+        &self,
+        id: &str,
+        spec: &Process,
+        opts: Option<ExecOpts>,
+    ) -> Result<(), Error> {
+        let (mut temp_file, file_name): (NamedTempFile, String) =
+            utils::make_temp_file_in_runtime_dir()?;
+        {
+            let f = temp_file.as_file_mut();
+            let spec_json = serde_json::to_string(spec).map_err(Error::JsonDeserializationError)?;
+            f.write(spec_json.as_bytes())
+                .map_err(Error::SpecFileCreationError)?;
+            f.flush().map_err(Error::SpecFileCreationError)?;
+        }
+        let mut args = vec!["exec".to_string(), "process".to_string(), file_name];
+        if let Some(opts) = opts {
+            args.append(&mut opts.args()?);
+        }
+        args.push(id.to_string());
+        self.command(&args, true).await.map(|_| ())
     }
 
     /// Send the specified signal to processes inside the container
@@ -380,7 +403,7 @@ impl Runc {
         Ok(if output == "null" {
             Vec::new()
         } else {
-            serde_json::from_str(output).map_err(|e| Error::JsonDeserializationError(e))?
+            serde_json::from_str(output).map_err(Error::JsonDeserializationError)?
         })
     }
 
@@ -401,7 +424,7 @@ impl Runc {
         Ok(if output == "null" {
             Vec::new()
         } else {
-            serde_json::from_str(output).map_err(|e| Error::JsonDeserializationError(e))?
+            serde_json::from_str(output).map_err(Error::JsonDeserializationError)?
         })
     }
 
@@ -414,31 +437,40 @@ impl Runc {
         self.command(&args, true).await.map(|_| ())
     }
 
-    pub async fn run(&self) -> Result<Vec<usize>, Error> {
-        Err(Error::UnimplementedError("run".to_string()))
-    }
-
-    pub async fn spec(&self) -> Result<Vec<usize>, Error> {
-        Err(Error::UnimplementedError("spec".to_string()))
+    /// Run the create, start, delete lifecycle of the container and return its exit status
+    pub async fn run(
+        &self,
+        id: &str,
+        bundle: impl AsRef<Path>,
+        opts: Option<CreateOpts>,
+    ) -> Result<(), Error> {
+        let mut args = vec!["run".to_string(), "--bundle".to_string()];
+        if let Some(opts) = opts {
+            args.append(&mut opts.args()?);
+        }
+        args.push(utils::abs_string(bundle)?);
+        args.push(id.to_string());
+        self.command(&args, true).await.map(|_| ())
     }
 
     /// Start an already created container
-    pub async fn start(&self) -> Result<Vec<usize>, Error> {
-        Err(Error::UnimplementedError("start".to_string()))
+    pub async fn start(&self, id: &str) -> Result<(), Error> {
+        let args = ["start".to_string(), id.to_string()];
+        self.command(&args, true).await.map(|_| ())
     }
 
     /// Return the state of a container
     pub async fn state(&self, id: &str) -> Result<Vec<usize>, Error> {
         let args = ["state".to_string(), id.to_string()];
         let output = self.command(&args, true).await?;
-        Ok(serde_json::from_str(&output).map_err(|e| Error::JsonDeserializationError(e))?)
+        Ok(serde_json::from_str(&output).map_err(Error::JsonDeserializationError)?)
     }
 
     pub async fn stats(&self, id: &str) -> Result<Stats, Error> {
         let args = ["events".to_string(), "--stats".to_string(), id.to_string()];
         let output = self.command(&args, true).await?;
         let event: Event =
-            serde_json::from_str(&output).map_err(|e| Error::JsonDeserializationError(e))?;
+            serde_json::from_str(&output).map_err(Error::JsonDeserializationError)?;
         if let Some(stats) = event.stats {
             Ok(stats)
         } else {
@@ -446,8 +478,25 @@ impl Runc {
         }
     }
 
-    pub async fn update(&self) -> Result<Vec<usize>, Error> {
-        Err(Error::UnimplementedError("update".to_string()))
+    /// Update a container with the provided resource spec
+    pub async fn update(&self, id: &str, resources: &LinuxResources) -> Result<(), Error> {
+        let (mut temp_file, file_name): (NamedTempFile, String) =
+            utils::make_temp_file_in_runtime_dir()?;
+        {
+            let f = temp_file.as_file_mut();
+            let spec_json =
+                serde_json::to_string(resources).map_err(Error::JsonDeserializationError)?;
+            f.write(spec_json.as_bytes())
+                .map_err(Error::SpecFileCreationError)?;
+            f.flush().map_err(Error::SpecFileCreationError)?;
+        }
+        let args = [
+            "update".to_string(),
+            "--resources".to_string(),
+            file_name,
+            id.to_string(),
+        ];
+        self.command(&args, true).await.map(|_| ())
     }
 }
 

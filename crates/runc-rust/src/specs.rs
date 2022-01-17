@@ -37,8 +37,9 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 /// The dimensions of a rectangle, used for console sizing
+/// This name is different from Go Version, avoiding confilict with [`std::boxed::Box`]
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Box {
+pub struct BoxSize {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub height: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -107,7 +108,7 @@ pub struct Process {
     /// Size of the console
     #[serde(rename = "consoleSize")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub console_size: Option<Box>,
+    pub console_size: Option<BoxSize>,
     /// User information
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<User>,
