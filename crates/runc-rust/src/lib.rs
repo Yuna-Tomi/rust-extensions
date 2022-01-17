@@ -42,7 +42,9 @@ use crate::specs::{LinuxResources, Process};
 use crate::utils::{
     DEBUG, DEFAULT_COMMAND, JSON, LOG, LOG_FORMAT, ROOT, ROOTLESS, SYSTEMD_CGROUP, TEXT,
 };
+use log::warn;
 use std::fmt::{self, Display};
+use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -60,15 +62,6 @@ pub mod options;
 pub mod specs;
 mod stream;
 mod utils;
-
-pub mod api {
-    pub use crate::console::*;
-    pub use crate::container::*;
-    pub use crate::container::*;
-    pub use crate::events::*;
-    pub use crate::monitor::*;
-    pub use crate::specs::*;
-}
 
 #[derive(Debug, Clone)]
 pub struct Version {
@@ -139,80 +132,80 @@ pub struct RuncConfig {
 }
 
 impl RuncConfig {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 
-    fn command(&mut self, command: impl AsRef<Path>) -> &mut Self {
+    pub fn command(mut self, command: impl AsRef<Path>) -> Self {
         self.command = Some(command.as_ref().to_path_buf());
         self
     }
 
-    fn root(&mut self, root: impl AsRef<Path>) -> &mut Self {
+    pub fn root(mut self, root: impl AsRef<Path>) -> Self {
         self.root = Some(root.as_ref().to_path_buf());
         self
     }
 
-    fn debug(&mut self, debug: bool) -> &mut Self {
+    pub fn debug(mut self, debug: bool) -> Self {
         self.debug = debug;
         self
     }
 
-    fn log(&mut self, log: impl AsRef<Path>) -> &mut Self {
+    pub fn log(mut self, log: impl AsRef<Path>) -> Self {
         self.log = Some(log.as_ref().to_path_buf());
         self
     }
 
-    fn log_format(&mut self, log_format: LogFormat) -> &mut Self {
+    pub fn log_format(mut self, log_format: LogFormat) -> Self {
         self.log_format = Some(log_format);
         self
     }
 
-    fn log_format_json(&mut self) -> &mut Self {
+    pub fn log_format_json(mut self) -> Self {
         self.log_format = Some(LogFormat::Json);
         self
     }
 
-    fn log_format_text(&mut self) -> &mut Self {
+    pub fn log_format_text(mut self) -> Self {
         self.log_format = Some(LogFormat::Text);
         self
     }
 
-    fn systemd_cgroup(&mut self, systemd_cgroup: bool) -> &mut Self {
+    pub fn systemd_cgroup(mut self, systemd_cgroup: bool) -> Self {
         self.systemd_cgroup = systemd_cgroup;
         self
     }
 
     // FIXME: criu is not supported now
-    // fn criu(&mut self, criu: bool) -> &mut Self {
+    // pub fn criu(mut self, criu: bool) -> Self {
     //     self.criu = criu;
     // }
 
-    fn rootless(&mut self, rootless: bool) -> &mut Self {
+    pub fn rootless(mut self, rootless: bool) -> Self {
         self.rootless = Some(rootless);
         self
     }
 
-    fn set_pgid(&mut self, set_pgid: bool) -> &mut Self {
+    pub fn set_pgid(mut self, set_pgid: bool) -> Self {
         self.set_pgid = set_pgid;
         self
     }
 
-    fn rootless_auto(&mut self) -> &mut Self {
+    pub fn rootless_auto(mut self) -> Self {
         let _ = self.rootless.take();
         self
     }
 
-    fn timeout(&mut self, millis: u64) -> &mut Self {
+    pub fn timeout(mut self, millis: u64) -> Self {
         self.timeout = Some(Duration::from_millis(millis));
         self
     }
 
-    fn build(self) -> Result<Runc, Error> {
+    pub fn build(self) -> Result<Runc, Error> {
         let command = utils::binary_path(self.command.unwrap_or(PathBuf::from(DEFAULT_COMMAND)))
             .ok_or(Error::NotFoundError)?;
         Ok(Runc {
-            command: command,
+            command,
             root: self.root,
             debug: self.debug,
             log: self.log,
@@ -272,7 +265,7 @@ impl Args for Runc {
             args.push(arg);
         }
         // if self.extra_args.len() > 0 {
-        //     args.append(&mut self.extra_args.clone())
+        //     args.append(mut self.extra_args.clone())
         // }
         Ok(args)
     }
@@ -333,7 +326,7 @@ impl Runc {
         &self,
         id: &str,
         bundle: impl AsRef<Path>,
-        opts: Option<CreateOpts>,
+        opts: Option<&CreateOpts>,
     ) -> Result<(), Error> {
         let mut args = vec![
             "create".to_string(),
@@ -349,24 +342,27 @@ impl Runc {
     }
 
     /// Delete a container
-    pub async fn delete(&self, id: &str, opts: Option<DeleteOpts>) -> Result<(), Error> {
+    pub async fn delete(&self, id: &str, opts: Option<&DeleteOpts>) -> Result<(), Error> {
         let mut args = vec!["delete".to_string()];
         if let Some(opts) = opts {
-            args.append(&mut opts.args()?);
+            args.append(&mut opts.args());
         }
         args.push(id.to_string());
-        Err(Error::UnimplementedError("kill".to_string()))
+        self.command(&args, true).await?;
+        Ok(())
     }
 
+    /// Return an event stream of container notifications
     pub async fn events(&self, id: &str, interval: &Duration) -> Result<(), Error> {
         Err(Error::UnimplementedError("events".to_string()))
     }
 
+    /// Execute an additional process inside the container
     pub async fn exec(
         &self,
         id: &str,
         spec: &Process,
-        opts: Option<ExecOpts>,
+        opts: Option<&ExecOpts>,
     ) -> Result<(), Error> {
         let (mut temp_file, file_name): (NamedTempFile, String) =
             utils::make_temp_file_in_runtime_dir()?;
@@ -382,24 +378,28 @@ impl Runc {
             args.append(&mut opts.args()?);
         }
         args.push(id.to_string());
-        self.command(&args, true).await.map(|_| ())
+        self.command(&args, true).await?;
+        Ok(())
     }
 
     /// Send the specified signal to processes inside the container
-    pub async fn kill(&self, id: &str, sig: i32, opts: Option<DeleteOpts>) -> Result<(), Error> {
+    pub async fn kill(&self, id: &str, sig: i32, opts: Option<&DeleteOpts>) -> Result<(), Error> {
         let mut args = vec!["kill".to_string()];
         if let Some(opts) = opts {
-            args.append(&mut opts.args()?);
+            args.append(&mut opts.args());
         }
         args.push(id.to_string());
         args.push(sig.to_string());
-        self.command(&args, true).await.map(|_| ())
+        self.command(&args, true).await?;
+        Ok(())
     }
 
+    /// List all containers associated with this runc instance
     pub async fn list(&self) -> Result<Vec<Container>, Error> {
         let args = ["list".to_string(), "--format-json".to_string()];
         let output = self.command(&args, false).await?;
         let output = output.trim();
+        // Ugly hack to work around golang
         Ok(if output == "null" {
             Vec::new()
         } else {
@@ -407,9 +407,11 @@ impl Runc {
         })
     }
 
+    /// Pause a container
     pub async fn pause(&self, id: &str) -> Result<(), Error> {
         let args = ["pause".to_string(), id.to_string()];
-        self.command(&args, true).await.map(|_| ())
+        self.command(&args, true).await?;
+        Ok(())
     }
 
     /// List all the processes inside the container, returning their pids
@@ -421,6 +423,7 @@ impl Runc {
         ];
         let output = self.command(&args, false).await?;
         let output = output.trim();
+        // Ugly hack to work around golang
         Ok(if output == "null" {
             Vec::new()
         } else {
@@ -432,9 +435,11 @@ impl Runc {
         Err(Error::UnimplementedError("restore".to_string()))
     }
 
+    /// Resume a container
     pub async fn resume(&self, id: &str) -> Result<(), Error> {
         let args = ["pause".to_string(), id.to_string()];
-        self.command(&args, true).await.map(|_| ())
+        self.command(&args, true).await?;
+        Ok(())
     }
 
     /// Run the create, start, delete lifecycle of the container and return its exit status
@@ -442,7 +447,7 @@ impl Runc {
         &self,
         id: &str,
         bundle: impl AsRef<Path>,
-        opts: Option<CreateOpts>,
+        opts: Option<&CreateOpts>,
     ) -> Result<(), Error> {
         let mut args = vec!["run".to_string(), "--bundle".to_string()];
         if let Some(opts) = opts {
@@ -450,13 +455,15 @@ impl Runc {
         }
         args.push(utils::abs_string(bundle)?);
         args.push(id.to_string());
-        self.command(&args, true).await.map(|_| ())
+        self.command(&args, true).await?;
+        Ok(())
     }
 
     /// Start an already created container
     pub async fn start(&self, id: &str) -> Result<(), Error> {
         let args = ["start".to_string(), id.to_string()];
-        self.command(&args, true).await.map(|_| ())
+        self.command(&args, true).await?;
+        Ok(())
     }
 
     /// Return the state of a container
@@ -466,6 +473,7 @@ impl Runc {
         Ok(serde_json::from_str(&output).map_err(Error::JsonDeserializationError)?)
     }
 
+    /// Return the latest statistics for a container
     pub async fn stats(&self, id: &str) -> Result<Stats, Error> {
         let args = ["events".to_string(), "--stats".to_string(), id.to_string()];
         let output = self.command(&args, true).await?;
@@ -496,17 +504,11 @@ impl Runc {
             file_name,
             id.to_string(),
         ];
-        self.command(&args, true).await.map(|_| ())
+        self.command(&args, true).await?;
+        Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use log::warn;
-    use std::fs;
-
-    // Clean up after tests
+// Clean up: this Drop tries to remove runc binary and associated directory, then only for tests.
     impl Drop for Runc {
         fn drop(&mut self) {
             if let Some(root) = self.root.clone() {
@@ -525,4 +527,161 @@ mod tests {
             }
         }
     }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use log::warn;
+    use std::fs;
+    use std::fs::File;
+    use std::{env, io};
+    
+    // following style of go-runc, use only true/false to test
+    const CMD_TRUE: &str = "/bin/true";
+    const CMD_FALSE: &str = "/bin/false";
+
+    #[tokio::test]
+    async fn test_command() {
+        let ok_runc = RuncConfig::new().command(CMD_TRUE).build().expect("unable to create runc instance");
+        tokio::spawn(async move {
+            ok_runc.command(&[], true).await.expect("true failed.");
+            eprintln!("ok_runc succeeded.");
+        });
+
+        let fail_runc = RuncConfig::new().command(CMD_FALSE).build().expect("unable to create runc instance");
+        tokio::spawn(async move {
+            match fail_runc.command(&[], true).await {
+                Ok(_) => panic!("fail_runc returned exit status 0."),
+                Err(Error::CommandFaliedError{
+                    status, stdout, stderr,
+                }) => {
+                    if status.code().unwrap() == 1 && stdout.is_empty() && stderr.is_empty() {
+                        eprintln!("fail_runc succeeded.");
+                    } else {
+                        panic!("unexpected outputs from fail_runc.")
+                    }
+                }
+                _ => panic!("unexpected error from fail_runc.")
+            }
+        }).await.expect("tokio spawn falied.");
+    }
+
+    #[tokio::test]
+    async fn test_create() {
+        let opts = CreateOpts::new();
+        let ok_runc = RuncConfig::new().command(CMD_TRUE).build().expect("unable to create runc instance");
+        tokio::spawn(async move {
+            ok_runc.create("fake-id", "fake-bundle", Some(&opts)).await.expect("true failed.");
+            eprintln!("ok_runc succeeded.");
+        });
+
+        let opts = CreateOpts::new();
+        let fail_runc = RuncConfig::new().command(CMD_FALSE).build().expect("unable to create runc instance");
+        tokio::spawn(async move {
+            match fail_runc.create("fake-id", "fake-bundle", Some(&opts)).await {
+                Ok(_) => panic!("fail_runc returned exit status 0."),
+                Err(Error::CommandFaliedError{
+                    status, stdout, stderr,
+                }) => {
+                    if status.code().unwrap() == 1 && stdout.is_empty() && stderr.is_empty() {
+                        eprintln!("fail_runc succeeded.");
+                    } else {
+                        panic!("unexpected outputs from fail_runc.")
+                    }
+                }
+                _ => panic!("unexpected error from fail_runc.")
+            }
+        }).await.expect("tokio spawn falied.");
+    }
+
+    #[tokio::test]
+    async fn test_run() {
+        let opts = CreateOpts::new();
+        let ok_runc = RuncConfig::new().command(CMD_TRUE).build().expect("unable to create runc instance");
+        tokio::spawn(async move {
+            ok_runc.create("fake-id", "fake-bundle", Some(&opts)).await.expect("true failed.");
+            eprintln!("ok_runc succeeded.");
+        });
+
+        let opts = CreateOpts::new();
+        let fail_runc = RuncConfig::new().command(CMD_FALSE).build().expect("unable to create runc instance");
+        tokio::spawn(async move {
+            match fail_runc.create("fake-id", "fake-bundle", Some(&opts)).await {
+                Ok(_) => panic!("fail_runc returned exit status 0."),
+                Err(Error::CommandFaliedError{
+                    status, stdout, stderr,
+                }) => {
+                    if status.code().unwrap() == 1 && stdout.is_empty() && stderr.is_empty() {
+                        eprintln!("fail_runc succeeded.");
+                    } else {
+                        panic!("unexpected outputs from fail_runc.")
+                    }
+                }
+                _ => panic!("unexpected error from fail_runc.")
+            }
+        }).await.expect("tokio spawn falied.");
+    }
+
+    #[tokio::test]
+    async fn test_exec() {
+        let opts = ExecOpts::new();
+        let proc = dummy_process();
+        let ok_runc = RuncConfig::new().command(CMD_TRUE).build().expect("unable to create runc instance");
+        tokio::spawn(async move {
+            ok_runc.exec("fake-id", &proc, Some(&opts)).await.expect("true failed.");
+            eprintln!("ok_runc succeeded.");
+        });
+
+        let opts = ExecOpts::new();
+        let proc = dummy_process();
+        let fail_runc = RuncConfig::new().command(CMD_FALSE).build().expect("unable to create runc instance");
+        tokio::spawn(async move {
+            match fail_runc.exec("fake-id", &proc, Some(&opts)).await {
+                Ok(_) => panic!("fail_runc returned exit status 0."),
+                Err(Error::CommandFaliedError{
+                    status, stdout, stderr,
+                }) => {
+                    if status.code().unwrap() == 1 && stdout.is_empty() && stderr.is_empty() {
+                        eprintln!("fail_runc succeeded.");
+                    } else {
+                        panic!("unexpected outputs from fail_runc.")
+                    }
+                }
+                _ => panic!("unexpected error from fail_runc.")
+            }
+        }).await.expect("tokio spawn falied.");
+    }
+
+    #[tokio::test]
+    async fn test_delete() {
+        let opts = DeleteOpts::new();
+        let ok_runc = RuncConfig::new().command(CMD_TRUE).build().expect("unable to create runc instance");
+        tokio::spawn(async move {
+            ok_runc.delete("fake-id",Some(&opts)).await.expect("true failed.");
+            eprintln!("ok_runc succeeded.");
+        });
+
+        let opts = DeleteOpts::new();
+        let fail_runc = RuncConfig::new().command(CMD_FALSE).build().expect("unable to create runc instance");
+        tokio::spawn(async move {
+            match fail_runc.delete("fake-id", Some(&opts)).await {
+                Ok(_) => panic!("fail_runc returned exit status 0."),
+                Err(Error::CommandFaliedError{
+                    status, stdout, stderr,
+                }) => {
+                    if status.code().unwrap() == 1 && stdout.is_empty() && stderr.is_empty() {
+                        eprintln!("fail_runc succeeded.");
+                    } else {
+                        panic!("unexpected outputs from fail_runc.")
+                    }
+                }
+                _ => panic!("unexpected error from fail_runc.")
+            }
+        }).await.expect("tokio spawn falied.");
+    }
+
+    fn dummy_process() -> Process {
+        serde_json::from_str("{}").unwrap()
+    }
 }
+

@@ -170,13 +170,13 @@ pub struct DeleteOpts {
 }
 
 impl Args for DeleteOpts {
-    type Output = Result<Vec<String>, Error>;
+    type Output = Vec<String>;
     fn args(&self) -> Self::Output {
         let mut args: Vec<String> = vec![];
         if self.force {
             args.push(FORCE.to_string());
         }
-        Ok(args)
+        args
     }
 }
 
@@ -199,13 +199,13 @@ pub struct KillOpts {
 }
 
 impl Args for KillOpts {
-    type Output = Result<Vec<String>, Error>;
+    type Output = Vec<String>;
     fn args(&self) -> Self::Output {
         let mut args: Vec<String> = vec![];
         if self.all {
             args.push(ALL.to_string());
         }
-        Ok(args)
+        args
     }
 }
 
@@ -217,5 +217,125 @@ impl KillOpts {
     pub fn all(&mut self, all: bool) -> &mut Self {
         self.all = all;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+    use std::env;
+
+    const ARGS_FAIL_MSG: &str = "Args.args() failed.";
+
+    #[test]
+    fn create_opts_test() {
+        assert_eq!(
+            CreateOpts::new().args().expect(ARGS_FAIL_MSG),
+            vec![String::new(); 0]
+        );
+
+        assert_eq!(
+            CreateOpts::new()
+                .pid_file(".")
+                .args()
+                .expect(ARGS_FAIL_MSG),
+            vec![
+                "--pid-file".to_string(),
+                env::current_dir().unwrap().to_string_lossy().parse::<String>().unwrap()
+            ]
+        );
+
+        assert_eq!(
+            CreateOpts::new()
+                .console_socket("..")
+                .args()
+                .expect(ARGS_FAIL_MSG),
+            vec![
+                "--console-socket".to_string(),
+                env::current_dir().unwrap().parent().unwrap().to_string_lossy().parse::<String>().unwrap()
+            ]
+        );
+
+        assert_eq!(
+            CreateOpts::new()
+                .detach(true)
+                .no_pivot(true)
+                .no_new_keyring(true)
+                .args()
+                .expect(ARGS_FAIL_MSG),
+            vec![
+                "--no-pivot".to_string(),
+                "--no-new-keyring".to_string(),
+                "--detach".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn exec_opts_test() {
+        assert_eq!(
+            ExecOpts::new().args().expect(ARGS_FAIL_MSG),
+            vec![String::new(); 0]
+        );
+
+        assert_eq!(
+            ExecOpts::new()
+                .pid_file(".")
+                .args()
+                .expect(ARGS_FAIL_MSG),
+            vec![
+                "--pid-file".to_string(),
+                env::current_dir().unwrap().to_string_lossy().parse::<String>().unwrap()
+            ]
+        );
+
+        assert_eq!(
+            ExecOpts::new()
+                .console_socket("..")
+                .args()
+                .expect(ARGS_FAIL_MSG),
+            vec![
+                "--console-socket".to_string(),
+                env::current_dir().unwrap().parent().unwrap().to_string_lossy().parse::<String>().unwrap()
+            ]
+        );
+
+        assert_eq!(
+            ExecOpts::new()
+                .detach(true)
+                .args()
+                .expect(ARGS_FAIL_MSG),
+            vec![
+                "--detach".to_string(),
+            ]
+        );
+
+    }
+
+    #[test]
+    fn delete_opts_test() {
+        assert_eq!(
+            DeleteOpts::new().force(false).args(),
+            vec![String::new(); 0]
+        );
+
+        assert_eq!(
+            DeleteOpts::new().force(true).args(),
+            vec!["--force".to_string()],
+        );
+    }
+
+    #[test]
+    fn kill_opts_test() {
+        assert_eq!(
+            KillOpts::new().all(false).args(),
+            vec![String::new(); 0]
+        );
+
+        assert_eq!(
+            KillOpts::new().all(true).args(),
+            vec!["--all".to_string()],
+        );
     }
 }
