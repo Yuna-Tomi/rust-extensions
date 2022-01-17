@@ -85,27 +85,27 @@ impl CreateOpts {
         Self::default()
     }
 
-    pub fn pid_file(&mut self, pid_file: impl AsRef<Path>) -> &mut Self {
+    pub fn pid_file(mut self, pid_file: impl AsRef<Path>) -> Self {
         self.pid_file = Some(pid_file.as_ref().to_path_buf());
         self
     }
 
-    pub fn console_socket(&mut self, console_socket: impl AsRef<Path>) -> &mut Self {
+    pub fn console_socket(mut self, console_socket: impl AsRef<Path>) -> Self {
         self.console_socket = Some(console_socket.as_ref().to_path_buf());
         self
     }
 
-    pub fn detach(&mut self, detach: bool) -> &mut Self {
+    pub fn detach(mut self, detach: bool) -> Self {
         self.detach = detach;
         self
     }
 
-    pub fn no_pivot(&mut self, no_pivot: bool) -> &mut Self {
+    pub fn no_pivot(mut self, no_pivot: bool) -> Self {
         self.no_pivot = no_pivot;
         self
     }
 
-    pub fn no_new_keyring(&mut self, no_new_keyring: bool) -> &mut Self {
+    pub fn no_new_keyring(mut self, no_new_keyring: bool) -> Self {
         self.no_new_keyring = no_new_keyring;
         self
     }
@@ -146,17 +146,17 @@ impl ExecOpts {
         Self::default()
     }
 
-    pub fn pid_file(&mut self, pid_file: impl AsRef<Path>) -> &mut Self {
+    pub fn pid_file(mut self, pid_file: impl AsRef<Path>) -> Self {
         self.pid_file = Some(pid_file.as_ref().to_path_buf());
         self
     }
 
-    pub fn console_socket(&mut self, console_socket: impl AsRef<Path>) -> &mut Self {
+    pub fn console_socket(mut self, console_socket: impl AsRef<Path>) -> Self {
         self.console_socket = Some(console_socket.as_ref().to_path_buf());
         self
     }
 
-    pub fn detach(&mut self, detach: bool) -> &mut Self {
+    pub fn detach(mut self, detach: bool) -> Self {
         self.detach = detach;
         self
     }
@@ -185,7 +185,7 @@ impl DeleteOpts {
         Self::default()
     }
 
-    pub fn force(&mut self, force: bool) -> &mut Self {
+    pub fn force(mut self, force: bool) -> Self {
         self.force = force;
         self
     }
@@ -214,7 +214,7 @@ impl KillOpts {
         Self::default()
     }
 
-    pub fn all(&mut self, all: bool) -> &mut Self {
+    pub fn all(mut self, all: bool) -> Self {
         self.all = all;
         self
     }
@@ -236,13 +236,14 @@ mod tests {
         );
 
         assert_eq!(
-            CreateOpts::new()
-                .pid_file(".")
-                .args()
-                .expect(ARGS_FAIL_MSG),
+            CreateOpts::new().pid_file(".").args().expect(ARGS_FAIL_MSG),
             vec![
                 "--pid-file".to_string(),
-                env::current_dir().unwrap().to_string_lossy().parse::<String>().unwrap()
+                env::current_dir()
+                    .unwrap()
+                    .to_string_lossy()
+                    .parse::<String>()
+                    .unwrap()
             ]
         );
 
@@ -253,7 +254,13 @@ mod tests {
                 .expect(ARGS_FAIL_MSG),
             vec![
                 "--console-socket".to_string(),
-                env::current_dir().unwrap().parent().unwrap().to_string_lossy().parse::<String>().unwrap()
+                env::current_dir()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .to_string_lossy()
+                    .parse::<String>()
+                    .unwrap()
             ]
         );
 
@@ -280,13 +287,14 @@ mod tests {
         );
 
         assert_eq!(
-            ExecOpts::new()
-                .pid_file(".")
-                .args()
-                .expect(ARGS_FAIL_MSG),
+            ExecOpts::new().pid_file(".").args().expect(ARGS_FAIL_MSG),
             vec![
                 "--pid-file".to_string(),
-                env::current_dir().unwrap().to_string_lossy().parse::<String>().unwrap()
+                env::current_dir()
+                    .unwrap()
+                    .to_string_lossy()
+                    .parse::<String>()
+                    .unwrap()
             ]
         );
 
@@ -297,20 +305,20 @@ mod tests {
                 .expect(ARGS_FAIL_MSG),
             vec![
                 "--console-socket".to_string(),
-                env::current_dir().unwrap().parent().unwrap().to_string_lossy().parse::<String>().unwrap()
+                env::current_dir()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .to_string_lossy()
+                    .parse::<String>()
+                    .unwrap()
             ]
         );
 
         assert_eq!(
-            ExecOpts::new()
-                .detach(true)
-                .args()
-                .expect(ARGS_FAIL_MSG),
-            vec![
-                "--detach".to_string(),
-            ]
+            ExecOpts::new().detach(true).args().expect(ARGS_FAIL_MSG),
+            vec!["--detach".to_string(),]
         );
-
     }
 
     #[test]
@@ -328,14 +336,8 @@ mod tests {
 
     #[test]
     fn kill_opts_test() {
-        assert_eq!(
-            KillOpts::new().all(false).args(),
-            vec![String::new(); 0]
-        );
+        assert_eq!(KillOpts::new().all(false).args(), vec![String::new(); 0]);
 
-        assert_eq!(
-            KillOpts::new().all(true).args(),
-            vec!["--all".to_string()],
-        );
+        assert_eq!(KillOpts::new().all(true).args(), vec!["--all".to_string()],);
     }
 }
