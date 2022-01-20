@@ -44,15 +44,15 @@ pub trait Args {
 #[derive(Debug, Clone, Default)]
 pub struct CreateOpts {
     /// Path to where a pid file should be created.
-    pub pid_file: Option<PathBuf>,
+    pid_file: Option<PathBuf>,
     /// Path to where a console socket should be created.
-    pub console_socket: Option<PathBuf>,
+    console_socket: Option<PathBuf>,
     /// Detach from the container's process (only available for run)
-    pub detach: bool,
+    detach: bool,
     /// Don't use pivot_root to jail process inside rootfs.
-    pub no_pivot: bool,
+    no_pivot: bool,
     /// A new session keyring for the container will not be created.
-    pub no_new_keyring: bool,
+    no_new_keyring: bool,
 }
 
 impl Args for CreateOpts {
@@ -115,11 +115,11 @@ impl CreateOpts {
 #[derive(Debug, Clone, Default)]
 pub struct ExecOpts {
     /// Path to where a pid file should be created.
-    pub pid_file: Option<PathBuf>,
+    pid_file: Option<PathBuf>,
     /// Path to where a console socket should be created.
-    pub console_socket: Option<PathBuf>,
+    console_socket: Option<PathBuf>,
     /// Detach from the container's process (only available for run)
-    pub detach: bool,
+    detach: bool,
 }
 
 impl Args for ExecOpts {
@@ -166,7 +166,7 @@ impl ExecOpts {
 #[derive(Debug, Clone, Default)]
 pub struct DeleteOpts {
     /// Forcibly delete the container if it is still running
-    pub force: bool,
+    force: bool,
 }
 
 impl Args for DeleteOpts {
@@ -195,7 +195,7 @@ impl DeleteOpts {
 #[derive(Debug, Clone, Default)]
 pub struct KillOpts {
     /// Seng the kill signal to all the processes inside the container
-    pub all: bool,
+    all: bool,
 }
 
 impl Args for KillOpts {

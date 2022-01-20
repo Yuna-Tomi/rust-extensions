@@ -70,7 +70,7 @@ pub fn make_temp_file_in_runtime_dir() -> Result<(NamedTempFile, String), Error>
             )
         })
         .ok_or_else(|| Error::SpecFilePathError)?;
-    let mut temp_file = Builder::new()
+    let temp_file = Builder::new()
         .prefix(&file_name)
         .tempfile()
         .map_err(Error::SpecFileCreationError)?;

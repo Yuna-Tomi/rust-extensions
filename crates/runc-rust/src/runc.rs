@@ -70,6 +70,7 @@ pub struct RuncConfig {
     // FIXME: implementation of extra_args is suspended due to difficulties.
     // extra_args: Vec<String>,
     /// Timeout settings for runc command. Default is 5 seconds.
+    /// This will be used only in AsyncClient.
     timeout: Option<Duration>,
 }
 
@@ -149,6 +150,7 @@ impl RuncConfig {
 
 
 /// Inner Runtime for RuncClient/RuncAsyncClient
+#[derive(Debug, Clone)]
 pub struct Runc {
     pub command: PathBuf,
     pub root: Option<PathBuf>,

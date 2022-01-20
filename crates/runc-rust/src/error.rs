@@ -57,7 +57,7 @@ pub enum Error {
     #[error("Error occured in runc: {0}")]
     CommandError(io::Error),
 
-    #[error("Runc command failed: status={status}, stdout=\"{stdout}\", stdout=\"{stderr}\"")]
+    #[error("Runc command failed: status={status}, stdout=\"{stdout}\", stderr=\"{stderr}\"")]
     CommandFaliedError {
         status: ExitStatus,
         stdout: String,

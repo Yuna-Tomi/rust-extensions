@@ -50,7 +50,7 @@ use std::fmt::{self, Display};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Child, Stdio, ExitStatus};
 use std::time::Duration;
 use tempfile::NamedTempFile;
 use tokio::time;
@@ -65,6 +65,14 @@ pub mod specs;
 mod runc;
 mod stream;
 mod utils;
+
+/// RuncResponse is for (pid, exit status, outputs).
+#[derive(Debug, Clone)]
+pub struct RuncResponse {
+    pub pid: u32,
+    pub status: ExitStatus, 
+    pub output: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct Version {
@@ -190,6 +198,7 @@ impl RuncConfig {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct RuncClient(runc::Runc);
 
 impl RuncClient {
@@ -198,35 +207,61 @@ impl RuncClient {
         config.build()
     }
 
-    #[cfg(target_os = "linux")]
-    pub fn command(&self, args: &[String], combined_output: bool) -> Result<String, Error> {
-        let args = [&self.0.args()?, args].concat();
-        let result = std::process::Command::new(&self.0.command)
+    /// spawn and spawn_raw returns [`std::process::Child`].
+    /// spawn_raw ignores the flag set to the client with [`RuncConfig`]
+    pub fn spawn_raw(&self, args: &[String]) -> Result<Child, Error> {
+        let child = std::process::Command::new(&self.0.command)
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .output()
+            .spawn()
             .map_err(Error::ProcessSpawnError)?;
+        Ok(child)
+    }
 
-
+    pub fn spawn(&self, args: &[String]) -> Result<Child, Error> {
+        let args = [&self.0.args()?, args].concat();
+        self.spawn_raw(&args)
+    }
+    
+    /// command and command_raw returns pid, exitstatus and outputs.
+    /// command_raw ignores the flag set to the client with [`RuncConfig`]
+    pub fn command_raw(&self, args:& [String], combined_output: bool) -> Result<RuncResponse, Error> {
+        let child = self.spawn_raw(args)?;
+        let pid = child.id();
+        let result = child.wait_with_output().map_err(Error::CommandError)?;
         let status = result.status;
         let stdout = String::from_utf8(result.stdout).unwrap();
         let stderr = String::from_utf8(result.stderr).unwrap();
 
         if status.success() {
             Ok(if combined_output {
-                stdout + stderr.as_str()
+                RuncResponse {
+                    pid, status,
+                    output: stdout + stderr.as_str()
+                }
             } else {
-                stdout
+                RuncResponse {
+                    pid, status,
+                    output: stdout,
+                }
             })
         } else {
+            // [DEBUG]
+            // let stdout = stdout + &args.join(" ");
             Err(Error::CommandFaliedError {
                 status,
                 stdout,
                 stderr,
             })
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn command(&self, args: &[String], combined_output: bool) -> Result<RuncResponse, Error> {
+        let args = [&self.0.args()?, args].concat();
+        self.command_raw(&args, combined_output)
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -244,7 +279,7 @@ impl RuncClient {
         id: &str,
         bundle: impl AsRef<Path>,
         opts: Option<&CreateOpts>,
-    ) -> Result<(), Error> {
+    ) -> Result<RuncResponse, Error> {
         let mut args = vec![
             "create".to_string(),
             "--bundle".to_string(),
@@ -254,19 +289,17 @@ impl RuncClient {
             args.append(&mut opts.args()?);
         }
         args.push(id.to_string());
-        self.command(&args, true)?;
-        Ok(())
+        Ok(self.command(&args, true)?)
     }
 
     /// Delete a container
-    pub fn delete(&self, id: &str, opts: Option<&DeleteOpts>) -> Result<(), Error> {
+    pub fn delete(&self, id: &str, opts: Option<&DeleteOpts>) -> Result<RuncResponse, Error> {
         let mut args = vec!["delete".to_string()];
         if let Some(opts) = opts {
             args.append(&mut opts.args());
         }
         args.push(id.to_string());
-        self.command(&args, true)?;
-        Ok(())
+        Ok(self.command(&args, true)?)
     }
 
     /// Return an event stream of container notifications
@@ -300,21 +333,21 @@ impl RuncClient {
     }
 
     /// Send the specified signal to processes inside the container
-    pub fn kill(&self, id: &str, sig: i32, opts: Option<&DeleteOpts>) -> Result<(), Error> {
+    pub fn kill(&self, id: &str, sig: u32, opts: Option<&KillOpts>) -> Result<(), Error> {
         let mut args = vec!["kill".to_string()];
         if let Some(opts) = opts {
             args.append(&mut opts.args());
         }
         args.push(id.to_string());
         args.push(sig.to_string());
-        self.command(&args, true)?;
+        let _ = self.command(&args, true)?;
         Ok(())
     }
 
     /// List all containers associated with this runc instance
     pub fn list(&self) -> Result<Vec<Container>, Error> {
         let args = ["list".to_string(), "--format-json".to_string()];
-        let output = self.command(&args, false)?;
+        let output = self.command(&args, false)?.output;
         let output = output.trim();
         // Ugly hack to work around golang
         Ok(if output == "null" {
@@ -327,7 +360,7 @@ impl RuncClient {
     /// Pause a container
     pub fn pause(&self, id: &str) -> Result<(), Error> {
         let args = ["pause".to_string(), id.to_string()];
-        self.command(&args, true);
+        self.command(&args, true)?;
         Ok(())
     }
 
@@ -338,7 +371,7 @@ impl RuncClient {
             "--format-json".to_string(),
             id.to_string(),
         ];
-        let output = self.command(&args, false)?;
+        let output = self.command(&args, false)?.output;
         let output = output.trim();
         // Ugly hack to work around golang
         Ok(if output == "null" {
@@ -365,35 +398,34 @@ impl RuncClient {
         id: &str,
         bundle: impl AsRef<Path>,
         opts: Option<&CreateOpts>,
-    ) -> Result<(), Error> {
+    ) -> Result<RuncResponse, Error> {
         let mut args = vec!["run".to_string(), "--bundle".to_string()];
         if let Some(opts) = opts {
             args.append(&mut opts.args()?);
         }
         args.push(utils::abs_string(bundle)?);
         args.push(id.to_string());
-        self.command(&args, true)?;
-        Ok(())
+        // ugly hack?: is it ok to stick to run 
+        Ok(self.command(&args, true)?)
     }
 
     /// Start an already created container
-    pub fn start(&self, id: &str) -> Result<(), Error> {
+    pub fn start(&self, id: &str) -> Result<RuncResponse, Error> {
         let args = ["start".to_string(), id.to_string()];
-        self.command(&args, true)?;
-        Ok(())
+        Ok(self.command(&args, true)?)
     }
 
     /// Return the state of a container
     pub fn state(&self, id: &str) -> Result<Vec<usize>, Error> {
         let args = ["state".to_string(), id.to_string()];
-        let output = self.command(&args, true)?;
+        let output = self.command(&args, true)?.output;
         Ok(serde_json::from_str(&output).map_err(Error::JsonDeserializationError)?)
     }
 
     /// Return the latest statistics for a container
     pub fn stats(&self, id: &str) -> Result<Stats, Error> {
         let args = ["events".to_string(), "--stats".to_string(), id.to_string()];
-        let output = self.command(&args, true)?;
+        let output = self.command(&args, true)?.output;
         let event: Event =
             serde_json::from_str(&output).map_err(Error::JsonDeserializationError)?;
         if let Some(stats) = event.stats {
@@ -426,7 +458,9 @@ impl RuncClient {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct RuncAsyncClient(runc::Runc);
+
 impl RuncAsyncClient {
     /// Create a new runc client from the supplied configuration
     pub fn from_config(config: RuncConfig) -> Result<Self, Error> {
@@ -539,7 +573,7 @@ impl RuncAsyncClient {
     }
 
     /// Send the specified signal to processes inside the container
-    pub async fn kill(&self, id: &str, sig: i32, opts: Option<&DeleteOpts>) -> Result<(), Error> {
+    pub async fn kill(&self, id: &str, sig: u32, opts: Option<&KillOpts>) -> Result<(), Error> {
         let mut args = vec!["kill".to_string()];
         if let Some(opts) = opts {
             args.append(&mut opts.args());

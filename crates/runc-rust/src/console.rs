@@ -36,6 +36,7 @@ use crate::error::Error;
 use crate::utils;
 use log::warn;
 use mio::net::{SocketAddr, UnixListener};
+use tempfile::TempDir;
 use std::env;
 use std::ffi::c_void;
 use std::os::unix::io::AsRawFd;
@@ -46,10 +47,14 @@ use tempfile;
 // use tokio::future::poll_fn;
 use tokio::fs::File;
 use tokio::io::unix::AsyncFd;
+use uuid::Uuid;
 
 /// Receive a PTY master over the provided unix socket
 pub struct ReceivePtyMaster {
-    console_socket: PathBuf,
+    pub console_socket: PathBuf,
+    /// Temporal directory for pty.sock. This will be [`Some`] only if you make this struct with `new_with_temp_sock`
+    /// If you use tempdir to bind socket, you should contain TempDir to guarantee the tempdir exits as long as pty master.
+    temp_pty_dir: Option<TempDir>,
     listener: Option<UnixListener>,
     /// temporal socket should be cleaned, including its tempdir
     is_temp: bool,
@@ -61,27 +66,29 @@ impl ReceivePtyMaster {
     /// Bind a unix domain socket to the provided path
     pub fn new(console_socket: PathBuf) -> Result<Self, Error> {
         let listener = UnixListener::bind(utils::abs_path_buf(&console_socket)?)
-            .map_err(|e| Error::UnixSocketConnectionError(e))?;
+            .map_err(Error::UnixSocketConnectionError)?;
         Ok(Self {
             console_socket,
+            temp_pty_dir: None,
             listener: Some(listener),
             is_temp: false,
         })
     }
 
     /// Creating temporal socket
-    pub fn new_with_temporary_sock() -> Result<Self, Error> {
-        let runtime_dir = env::var("XDG_RUNTIME_DIR").map_err(|e| Error::EnvError(e))?;
+    pub fn new_with_temp_sock() -> Result<Self, Error> {
+        // it cannot be assumed that environment variable "XDG_RUNTIME_DIR" always exists.
+        // let runtime_dir = env::var("XDG_RUNTIME_DIR").map_err(Error::EnvError)?;
         let pty_dir = tempfile::Builder::new()
-            .prefix("pty")
-            .rand_bytes(4)
-            .tempdir_in(&runtime_dir)
-            .map_err(|e| Error::FileSystemError(e))?;
+            .prefix(&format!("pty{}", rand::random::<u32>()))
+            .tempdir_in("/tmp")
+            .map_err(Error::FileSystemError)?;
         let console_socket = utils::abs_path_buf(pty_dir.path().join("pty.sock"))?;
         let listener =
-            UnixListener::bind(&console_socket).map_err(|e| Error::UnixSocketConnectionError(e))?;
+            UnixListener::bind(&console_socket).map_err(Error::UnixSocketConnectionError)?;
         Ok(Self {
             console_socket,
+            temp_pty_dir: Some(pty_dir),
             listener: Some(listener),
             is_temp: true,
         })
@@ -151,10 +158,21 @@ impl Drop for ReceivePtyMaster {
             if let Err(e) = fs::remove_dir_all(dir_path) {
                 warn!("failed to clean up tempdir for socket: {}", e);
             }
-        } else {
-            if let Err(e) = fs::remove_file(&self.console_socket) {
-                warn!("failed to clean up console socket: {}", e);
-            }
+        } else if let Err(e) = fs::remove_file(&self.console_socket) {
+            warn!("failed to clean up console socket: {}", e);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn temporal_sock() {
+        match ReceivePtyMaster::new_with_temp_sock() {
+            Ok(receiver) => { drop(receiver); }
+            Err(e) => panic!("couldn't create temporal socket. {}", e),
         }
     }
 }
