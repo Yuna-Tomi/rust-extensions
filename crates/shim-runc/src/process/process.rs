@@ -17,9 +17,13 @@
 use crate::options::oci::Options;
 use crate::process::config::{CreateConfig, ExecConfig};
 use crate::utils;
-use chrono::Utc;
+use chrono::{Utc, DateTime};
 use containerd_runc_rust as runc;
 use containerd_shim_protos as protos;
+use nix::{
+    unistd::Pid,
+    sys::wait::{self, WaitPidFlag, WaitStatus},
+};
 use runc::RuncClient;
 use runc::options::{DeleteOpts, KillOpts};
 use std::fs::OpenOptions;
@@ -41,7 +45,7 @@ pub trait InitState {
     fn exec(&self, config: ExecConfig) -> io::Result<()>; // FIXME: Result<dyn impl Process>
     fn kill(&mut self, sig: u32, all: bool) -> io::Result<()>;
     fn set_exited(&mut self, status: isize);
-    fn status(&self) -> io::Result<String>;
+    fn state(&self) -> io::Result<ProcessState>;
 }
 
 pub trait Process {
@@ -52,23 +56,26 @@ pub trait Process {
     // FIXME: suspended for difficulties
     // fn stdin(&self) -> ???;
     fn stdio(&self) -> StdioConfig;
-    fn wait(&self);
+    fn wait(&mut self) -> io::Result<()>;
     // FIXME: suspended for difficulties
     // fn resize(&self) -> io::Result<()>;
     fn start(&mut self) -> io::Result<()>;
     fn delete(&mut self) -> io::Result<()>;
     fn kill(&mut self, sig: u32, all: bool) -> io::Result<()>;
     fn set_exited(&mut self, status: isize);
-    fn status(&self) -> io::Result<String>;
+    fn state(&self) -> io::Result<ProcessState>;
 }
 
-#[derive(Debug, Clone)]
+pub trait ContainerProcess: InitState + Process {}
+
+#[derive(Debug, Clone, Copy)]
 pub enum ProcessState {
     Unknown,
     Created,
     // CreatedCheckpoint,
     Running,
     Paused,
+    Pausing,
     Stopped,
     Deleted,
 }
@@ -78,7 +85,7 @@ pub struct StdioConfig {
     pub stdin: String,
     pub stdout: String,
     pub stderr: String,
-    terminal: bool,
+    pub terminal: bool,
 }
 
 // Might be ugly hack: in Rust, it is not good idea to hold Mutex inside InitProcess because it disables to clone.
@@ -259,17 +266,23 @@ impl InitState for InitProcess {
             log::error!("{}", e);
             io::ErrorKind::Other
         })?;
-
-        panic!("unimplemented!")
+        Ok(())
     }
 
     fn set_exited(&mut self, status: isize) {
         let _m = self.mu.lock().unwrap();
-        panic!("unimplemented!")
+        let time = Utc::now();
+        self.state = ProcessState::Stopped;
+        self.exited = Some(time);
+        self.status = status;
     }
 
-    fn status(&self) -> io::Result<String> {
-        panic!("unimplemented!")
+    fn state(&self) -> io::Result<ProcessState> {
+        let _m = self.mu.lock().unwrap();
+        match self.state {
+            ProcessState::Unknown => Err(io::Error::from(io::ErrorKind::NotFound)),
+            _ => Ok(self.state),
+        }
     }
 }
 
@@ -298,18 +311,22 @@ impl Process for InitProcess {
         self.stdio.clone()
     }
 
-    fn status(&self) -> io::Result<String> {
-        let _m = self.mu.lock();
-        if self.pausing {
-            Ok("pausing".to_string())
-        } else {
-            InitState::status(self)
-        }
+    fn state(&self) -> io::Result<ProcessState> {
+        InitState::state(self)
     }
 
-    // FIXME
-    fn wait(&self) {
-        panic!("unimplemented!")
+    fn wait(&mut self) -> io::Result<()> {
+        // FIXME: Might be ugly hack
+        loop {
+            match wait::waitpid(Pid::from_raw(self.pid as i32), None) {
+                Ok(WaitStatus::Exited(_, status)) => {
+                    InitState::set_exited(self, status as isize);
+                    return Ok(());
+                }
+                Err(e) => return Err(io::Error::from_raw_os_error(e as i32)),
+                _ => {}
+            }
+        }
     }
 
     fn start(&mut self) -> io::Result<()> {

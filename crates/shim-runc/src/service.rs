@@ -15,6 +15,9 @@
 */
 
 use crate::container::Container;
+use crate::process::process::{
+    Process, ProcessState
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::sleep;
@@ -33,7 +36,8 @@ use protos::shim::{
     empty::Empty,
     shim::{
         CreateTaskRequest, CreateTaskResponse, DeleteRequest, DeleteResponse, ExecProcessRequest,
-        ExecProcessResponse, KillRequest, StartRequest, StartResponse,
+        ExecProcessResponse, KillRequest, StartRequest, StartResponse, StateRequest, StateResponse,
+        WaitRequest, WaitResponse,
     },
 };
 use runc::console::ReceivePtyMaster;
@@ -43,6 +47,7 @@ use runc::{RuncClient, RuncConfig};
 use shim::{api, ExitSignal, TtrpcContext, TtrpcResult};
 use ttrpc::{Code, Status};
 use uuid::Uuid;
+use protos::shim::task::Status as TaskStatus;
 
 use crate::dbg::*;
 
@@ -190,7 +195,7 @@ impl shim::Task for Service {
         })?;
 
         debug_log!("call Container::start()");
-        let pid = container.start(_req.clone()).map_err(|_|
+        let pid = container.start(&_req).map_err(|_|
             // FIXME: appropriate error mapping
             ttrpc::error::Error::RpcStatus(Status {
                 code: Code::UNKNOWN,
@@ -208,55 +213,211 @@ impl shim::Task for Service {
         })
     }
 
-    // fn kill(
-    //     &self,
-    //     _ctx: &ttrpc::TtrpcContext,
-    //     _req: KillRequest,
-    // ) -> ttrpc::Result<Empty> {
-    //     let opts = KillOpts::new().all(_req.all);
-    //     self.runc
-    //         .kill(&_req.id, _req.signal, Some(&opts))
-    //         .map_err(|e| {
-    //             let (code, message) = err_mapping(e);
-    //             ttrpc::Error::RpcStatus(Status {
-    //                 code,
-    //                 message,
-    //                 details: RepeatedField::new(),
-    //                 unknown_fields: _req.unknown_fields.clone(),
-    //                 cached_size: _req.cached_size.clone(),
-    //             })
-    //         })?;
-    //     Ok(containerd_shim_protos::shim::empty::Empty {
-    //         unknown_fields: _req.unknown_fields,
-    //         cached_size: _req.cached_size,
-    //     })
-    // }
+    fn exec(&self, _ctx: &::ttrpc::TtrpcContext, _req: ExecProcessRequest) -> ::ttrpc::Result<Empty> {
+        debug_log!("TTRPC call: exec");
+        debug_log!("request: id={}", _req.get_id());
+        Err(::ttrpc::Error::RpcStatus(::ttrpc::get_status(::ttrpc::Code::NOT_FOUND, "/containerd.task.v2.Task/Exec is not supported".to_string())))
+    }
 
-    // fn delete(
-    //     &self,
-    //     _ctx: &ttrpc::TtrpcContext,
-    //     _req: DeleteRequest,
-    // ) -> ttrpc::Result<DeleteResponse> {
-    //     let opts = DeleteOpts::new().force(true);
-    //     let res = self.runc.delete(&_req.id, Some(&opts)).map_err(|e| {
-    //         let (code, message) = err_mapping(e);
+    fn state(&self, _ctx: &ttrpc::TtrpcContext, _req: StateRequest) -> ttrpc::Result<StateResponse> {
+        debug_log!("TTRPC call: state");
+        debug_log!("request: id={}", _req.get_id());
 
-    //         ttrpc::Error::RpcStatus(Status {
-    //             code,
-    //             message,
-    //             details: RepeatedField::new(),
-    //             unknown_fields: _req.unknown_fields.clone(),
-    //             cached_size: _req.cached_size.clone(),
-    //         })
-    //     })?;
-    //     Ok(DeleteResponse {
-    //         pid: res.pid,
-    //         exit_status: res.status.code().unwrap() as u32,
-    //         exited_at: SingularPtrField::default(),
-    //         unknown_fields: _req.unknown_fields,
-    //         cached_size: _req.cached_size,
-    //     })
-    // }
+        let c = CONTAINERS.write().unwrap();
+        let container = c.get(_req.get_id()).ok_or_else(|| {
+            ttrpc::Error::RpcStatus(Status {
+                code: Code::NOT_FOUND,
+                message: "container not created".to_string(),
+                details: RepeatedField::new(),
+                unknown_fields: _req.unknown_fields.clone(),
+                cached_size: _req.cached_size.clone(),
+            })
+        })?;
+
+        let exec_id = _req.get_exec_id();
+        let p = container.process(exec_id).map_err(|_| {
+            ttrpc::Error::RpcStatus(Status {
+                code: Code::NOT_FOUND,
+                message: format!("process {} doesn't exist.", exec_id).to_string(),
+                details: RepeatedField::new(),
+                unknown_fields: _req.unknown_fields.clone(),
+                cached_size: _req.cached_size.clone(),
+            })
+        })?;
+
+        #[rustfmt::skip]
+        let status = match p.state {
+            ProcessState::Unknown   => TaskStatus::UNKNOWN,
+            ProcessState::Created   => TaskStatus::CREATED,
+            ProcessState::Running   => TaskStatus::RUNNING,
+            ProcessState::Stopped |
+            ProcessState::Deleted   => TaskStatus::STOPPED,
+            ProcessState::Paused    => TaskStatus::PAUSED,
+            ProcessState::Pausing   => TaskStatus::PAUSING,
+        };
+
+        let stdio = p.stdio();
+        debug_log!("TTRPC call succeeded: state");
+        Ok(StateResponse {
+            id: _req.exec_id,
+            bundle: p.bundle.clone(),
+            pid: p.pid as u32,
+            status,
+            stdin: stdio.stdin,
+            stdout: stdio.stdout,
+            stderr: stdio.stderr,
+            terminal: stdio.terminal,
+            exit_status: p.exit_status() as u32,
+            unknown_fields: _req.unknown_fields,
+            cached_size: _req.cached_size,
+            ..Default::default()
+        })
+    }
+
+    fn wait(&self, _ctx: &ttrpc::TtrpcContext, _req: WaitRequest) -> ttrpc::Result<WaitResponse> {
+        debug_log!("TTRPC call: wait");
+        debug_log!("request: id={}", _req.get_id());
+
+        let mut c = CONTAINERS.write().unwrap();
+        let container = c.get_mut(_req.get_id()).ok_or_else(|| {
+            ttrpc::Error::RpcStatus(Status {
+                code: Code::NOT_FOUND,
+                message: "container not created".to_string(),
+                details: RepeatedField::new(),
+                unknown_fields: _req.unknown_fields.clone(),
+                cached_size: _req.cached_size.clone(),
+            })
+        })?;
+
+        let exec_id = _req.get_exec_id();
+        let p = container.process_mut(exec_id).map_err(|_| {
+            ttrpc::Error::RpcStatus(Status {
+                code: Code::NOT_FOUND,
+                message: format!("process {} doesn't exist.", exec_id).to_string(),
+                details: RepeatedField::new(),
+                unknown_fields: _req.unknown_fields.clone(),
+                cached_size: _req.cached_size.clone(),
+            })
+        })?;
+
+        p.wait().map_err(|e| {
+            ttrpc::Error::RpcStatus(Status {
+                code: Code::NOT_FOUND,
+                message: format!("process {} failed: {}", exec_id, e).to_string(),
+                details: RepeatedField::new(),
+                unknown_fields: _req.unknown_fields.clone(),
+                cached_size: _req.cached_size.clone(),
+            })
+        })?;
+
+        // Might be ugly hack
+        let exited_at = match p.exited_at() {
+            Some(t) => Some(
+            Timestamp {
+                nanos: t.timestamp_nanos() as i32, // ugly hack
+                ..Default::default()
+            }),
+            None => None,
+        };
+        
+        debug_log!("TTRPC call succeeded: wait");
+
+        Ok(WaitResponse {
+            exit_status: p.exit_status() as u32, 
+            exited_at: SingularPtrField::from_option(exited_at),
+            unknown_fields: _req.unknown_fields,
+            cached_size: _req.cached_size,
+        })
+    }
+
+    fn kill(
+        &self,
+        _ctx: &ttrpc::TtrpcContext,
+        _req: KillRequest,
+    ) -> ttrpc::Result<Empty> {
+        debug_log!("TTRPC call: kill");
+        debug_log!("request: id={}", _req.get_id());
+
+        let mut c = CONTAINERS.write().unwrap();
+        let container = c.get_mut(_req.get_id()).ok_or_else(|| {
+            ttrpc::Error::RpcStatus(Status {
+                code: Code::NOT_FOUND,
+                message: "container not created".to_string(),
+                details: RepeatedField::new(),
+                unknown_fields: _req.unknown_fields.clone(),
+                cached_size: _req.cached_size.clone(),
+            })
+        })?;
+
+        container.kill(&_req).map_err(|e| {
+            ttrpc::Error::RpcStatus(Status {
+                code: Code::NOT_FOUND,
+                message: format!("failed to kill the container {}: {}", _req.id, e),
+                details: RepeatedField::new(),
+                unknown_fields: _req.unknown_fields.clone(),
+                cached_size: _req.cached_size.clone(),
+            })
+        })?;
+        
+        debug_log!("TTRPC succeeded: kill");
+        Ok(containerd_shim_protos::shim::empty::Empty {
+            unknown_fields: _req.unknown_fields,
+            cached_size: _req.cached_size,
+        })
+    }
+
+    fn delete(
+        &self,
+        _ctx: &ttrpc::TtrpcContext,
+        _req: DeleteRequest,
+    ) -> ttrpc::Result<DeleteResponse> {
+        debug_log!("TTRPC call: kill");
+        debug_log!("request: id={}", _req.get_id());
+
+        let mut c = CONTAINERS.write().unwrap();
+        let container = c.get_mut(_req.get_id()).ok_or_else(|| {
+            ttrpc::Error::RpcStatus(Status {
+                code: Code::NOT_FOUND,
+                message: "container not created".to_string(),
+                details: RepeatedField::new(),
+                unknown_fields: _req.unknown_fields.clone(),
+                cached_size: _req.cached_size.clone(),
+            })
+        })?;
+
+        match container.delete(&_req) {
+            Ok(Some(p)) => {
+                debug_log!("TTRPC call succeeded: kill");
+                // Might be ugly hack
+                let exited_at = match p.exited_at() {
+                    Some(t) => Some(
+                    Timestamp {
+                        nanos: t.timestamp_nanos() as i32, // ugly hack
+                        ..Default::default()
+                    }),
+                    None => None,
+                };
+
+                Ok(DeleteResponse{
+                    pid: p.pid as u32,
+                    exit_status: p.exit_status() as u32,
+                    exited_at: SingularPtrField::from_option(exited_at),
+                    unknown_fields: _req.unknown_fields,
+                    cached_size: _req.cached_size,
+                })
+            }
+            _ => {
+                    Err(ttrpc::Error::RpcStatus(Status {
+                    code: Code::NOT_FOUND,
+                    message: "couldn't kill the process.".to_string(),
+                    details: RepeatedField::new(),
+                    unknown_fields: _req.unknown_fields,
+                    cached_size: _req.cached_size,
+                }))
+
+            }
+        }
+    }
 
     fn connect(
         &self,

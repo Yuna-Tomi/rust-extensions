@@ -28,6 +28,7 @@ use std::sync::{Arc, Mutex};
 use sys_mount::{MountFlags, SupportedFilesystems, UnmountFlags};
 
 use crate::options::oci::Options;
+use crate::process::process::InitState;
 use crate::process::{
     config::{CreateConfig, MountConfig},
     process::{InitProcess, Process},
@@ -41,7 +42,7 @@ use protos::shim::{
     empty::Empty,
     shim::{
         CreateTaskRequest, CreateTaskResponse, DeleteRequest, DeleteResponse, ExecProcessRequest,
-        ExecProcessResponse, KillRequest, StartRequest, StartResponse,
+        ExecProcessResponse, KillRequest, StartRequest, StartResponse, StateRequest, StateResponse,
     },
 };
 
@@ -232,48 +233,56 @@ impl Container {
     //     }
     // }
 
-    pub fn process_remove(&mut self, id: &str) /* -> [] */
+    pub fn process_remove(&mut self, id: &str) -> Option<InitProcess>
     {
         let _m = self.mu.lock().unwrap();
-        let _ = self.processes.remove(id);
+        self.processes.remove(id)
     }
 
-    pub fn process(&self, id: &str) -> Result<InitProcess, Box<dyn std::error::Error>> {
+    pub fn process<'a>(&'a self, id: &str) -> io::Result<&'a InitProcess> {
         let _m = self.mu.lock().unwrap();
         // Might be ugly hack: is it good multiple "InitProcess"s that represent same process exist?
-        if id == "" {
-            Ok(self.process_self.clone())
+        if id == "" || id == self.id {
+            Ok(&self.process_self)
         } else {
             let p = self
                 .processes
                 .get(id)
-                .ok_or_else(|| ttrpc::Error::Others("process does not exists".to_string()))?;
-            Ok(p.clone())
+                .ok_or_else(|| io::ErrorKind::NotFound)?;
+            Ok(p)
+        }
+    }
+
+    pub fn process_mut<'a>(&'a mut self, id: &str) -> io::Result<&'a mut InitProcess> {
+        let _m = self.mu.lock().unwrap();
+        // Might be ugly hack: is it good multiple "InitProcess"s that represent same process exist?
+        if id == "" || id == self.id {
+            Ok(&mut self.process_self)
+        } else {
+            let p = self
+                .processes
+                .get_mut(id)
+                .ok_or_else(|| io::ErrorKind::NotFound)?;
+            Ok(p)
         }
     }
 
     /// Start a container process and return its pid
-    pub fn start(&mut self, req: StartRequest) -> Result<isize, Box<dyn std::error::Error>> {
-        let _m = self.mu.lock().unwrap();
-        // Might be ugly hack: is it good multiple "InitProcess"s that represent same process exist?
-        let p = if req.id == "" {
-            &mut self.process_self
-        } else {
-            self.processes
-                .get_mut(&req.id)
-                .ok_or_else(|| ttrpc::Error::Others("process does not exists".to_string()))?
-        };
+    pub fn start(&mut self, req: &StartRequest) -> Result<isize, Box<dyn std::error::Error>> {
+        let p = self.process_mut(&req.id)?;
         debug_log!("call InitProcess::start(): {:?}", p);
-        p.start()?;
+        InitState::start(p)?;
         Ok(p.pid)
     }
 
-    pub fn delete(&mut self, id: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let p = self.process(id)?;
-
-        Err(Box::new(ttrpc::Error::Others(
-            "not implemented yet".to_string(),
-        )))
+    pub fn delete(&mut self, req: &DeleteRequest) -> io::Result<Option<InitProcess>> {
+        let p = self.process_mut(&req.exec_id)?;
+        InitState::delete(p)?;
+        if req.exec_id != "" {
+            Ok(self.process_remove(&req.exec_id))
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn exec(&self) -> Result<(), Box<dyn std::error::Error>> {
@@ -300,10 +309,9 @@ impl Container {
         )))
     }
 
-    pub fn kill(&self) -> Result<(), Box<dyn std::error::Error>> {
-        Err(Box::new(ttrpc::Error::Others(
-            "not implemented yet".to_string(),
-        )))
+    pub fn kill(&mut self, req: &KillRequest) -> io::Result<()> {
+        let p = self.process_mut(&req.id)?;
+        InitState::kill(p, req.signal, req.all)
     }
 
     pub fn close_io(&self) -> Result<(), Box<dyn std::error::Error>> {
