@@ -140,7 +140,7 @@ impl shim::Task for Service {
         let unknown_fields = _req.unknown_fields.clone();
         let cached_size = _req.cached_size.clone();
         // FIXME: error handling
-        debug_log!("call Container new.");
+        debug_log!("call Container::new()");
         let container = match Container::new(_req) {
             Ok(c) => c,
             Err(e) => {
@@ -151,14 +151,16 @@ impl shim::Task for Service {
                 )));
             }
         };
-        let c = CONTAINERS.write().unwrap();
+        let mut c = CONTAINERS.write().unwrap();
+        let pid = container.pid() as u32;
         if c.contains_key(&id) {
             return Err(ttrpc::Error::Others(format!(
                 "create: container \"{}\" already exists.",
                 id
             )));
+        } else {
+            let _ = c.insert(id, container);
         }
-        let pid = container.pid() as u32;
 
         debug_log!("TTRPC call succeeded: create");
         Ok(CreateTaskResponse {
@@ -175,6 +177,8 @@ impl shim::Task for Service {
     ) -> ttrpc::Result<StartResponse> {
         debug_log!("TTRPC call: start");
         let mut c = CONTAINERS.write().unwrap();
+        debug_log!("request: id={}", _req.get_id());
+
         let container = c.get_mut(_req.get_id()).ok_or_else(|| {
             ttrpc::Error::RpcStatus(Status {
                 code: Code::NOT_FOUND,
@@ -185,6 +189,7 @@ impl shim::Task for Service {
             })
         })?;
 
+        debug_log!("call Container::start()");
         let pid = container.start(_req.clone()).map_err(|_|
             // FIXME: appropriate error mapping
             ttrpc::error::Error::RpcStatus(Status {

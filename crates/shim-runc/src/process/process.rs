@@ -20,8 +20,8 @@ use crate::utils;
 use chrono::Utc;
 use containerd_runc_rust as runc;
 use containerd_shim_protos as protos;
-use protos::shim::task::Status;
 use runc::RuncClient;
+use runc::options::{DeleteOpts, KillOpts};
 use std::fs::OpenOptions;
 use std::io::{self, Read};
 use std::path::Path;
@@ -32,15 +32,15 @@ use crate::dbg::*;
 
 pub trait InitState {
     fn start(&mut self) -> io::Result<()>;
-    fn delete(&self) -> io::Result<()>;
-    fn pause(&self) -> io::Result<()>;
-    fn resume(&self) -> io::Result<()>;
-    fn update(&self, resource_config: Option<&dyn std::any::Any>) -> io::Result<()>;
+    fn delete(&mut self) -> io::Result<()>;
+    fn pause(&mut self) -> io::Result<()>;
+    fn resume(&mut self) -> io::Result<()>;
+    fn update(&mut self, resource_config: Option<&dyn std::any::Any>) -> io::Result<()>;
     // FIXME: suspended for difficulties
     // fn checkpoint(&self) -> io::Result<()>;
     fn exec(&self, config: ExecConfig) -> io::Result<()>; // FIXME: Result<dyn impl Process>
-    fn kill(&self, sig: u32, all: bool) -> io::Result<()>;
-    fn set_exited(&self, status: isize);
+    fn kill(&mut self, sig: u32, all: bool) -> io::Result<()>;
+    fn set_exited(&mut self, status: isize);
     fn status(&self) -> io::Result<String>;
 }
 
@@ -56,10 +56,21 @@ pub trait Process {
     // FIXME: suspended for difficulties
     // fn resize(&self) -> io::Result<()>;
     fn start(&mut self) -> io::Result<()>;
-    fn delete(&self) -> io::Result<()>;
-    fn kill(&self, sig: u32, all: bool) -> io::Result<()>;
-    fn set_exited(&self, status: isize);
+    fn delete(&mut self) -> io::Result<()>;
+    fn kill(&mut self, sig: u32, all: bool) -> io::Result<()>;
+    fn set_exited(&mut self, status: isize);
     fn status(&self) -> io::Result<String>;
+}
+
+#[derive(Debug, Clone)]
+pub enum ProcessState {
+    Unknown,
+    Created,
+    // CreatedCheckpoint,
+    Running,
+    Paused,
+    Stopped,
+    Deleted,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -72,12 +83,12 @@ pub struct StdioConfig {
 
 // Might be ugly hack: in Rust, it is not good idea to hold Mutex inside InitProcess because it disables to clone.
 /// Init process for a container
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct InitProcess {
     pub mu: Arc<Mutex<()>>,
 
     // represents state transition
-    pub state: Status,
+    pub state: ProcessState,
 
     pub work_dir: String,
     pub id: String,
@@ -85,7 +96,7 @@ pub struct InitProcess {
     // FIXME: suspended for difficulties
     // console: ???,
     // platform: ???,
-    pub runtime: Option<RuncClient>,
+    pub runtime: RuncClient,
 
     /// The pausing state
     pub pausing: bool, // here using primitive bool because InitProcess is designed to allow access only through Arc<Mutex<Self>>.
@@ -118,7 +129,7 @@ impl InitProcess {
         config: CreateConfig,
         opts: Options,
         rootfs: R,
-    ) -> Self
+    ) -> io::Result<Self>
     where
         P: AsRef<Path>,
         W: AsRef<Path>,
@@ -130,8 +141,9 @@ impl InitProcess {
             namespace,
             opts.binary_name,
             opts.systemd_cgroup,
-        )
-        .ok();
+        ).map_err(|_|
+            io::Error::from(io::ErrorKind::NotFound),
+        )?;
         let stdio = StdioConfig {
             stdin: config.stdin,
             stdout: config.stdout,
@@ -139,9 +151,9 @@ impl InitProcess {
             terminal: config.terminal,
         };
 
-        // NOTE: pid is not set when this struct is created
-        Self {
-            state: Status::CREATED,
+        Ok(Self {
+            mu: Arc::default(),
+            state: ProcessState::Unknown,
             work_dir: work_dir
                 .as_ref()
                 .to_string_lossy()
@@ -151,14 +163,16 @@ impl InitProcess {
             bundle: config.bundle,
             runtime,
             stdio,
+            pausing: false,
             status: 0,
+            pid: 0, // NOTE: pid is not set when this struct is created
+            exited: None,
             rootfs: rootfs.as_ref().to_string_lossy().parse::<String>().unwrap(),
             io_uid: opts.io_uid as isize,
             io_gid: opts.io_gid as isize,
             no_pivot_root: opts.no_pivot_root,
             no_new_keyring: opts.no_new_keyring,
-            ..Default::default()
-        }
+        })
     }
 
     /// Create the process with the provided config
@@ -175,16 +189,10 @@ impl InitProcess {
             .no_pivot(self.no_pivot_root);
 
         // FIXME: apply appropriate error
-        debug_log!("extract runtime");
-        let runtime = self
-            .runtime
-            .as_ref()
-            .ok_or_else(|| io::ErrorKind::NotFound)?;
-
         debug_log!("call RuncClient::create:");
         debug_log!("    id={}, bundle={}", config.id, config.bundle);
         debug_log!("    opts={:?}", opts);
-        runtime
+        self.runtime
             .create(config.id.as_str(), &config.bundle, Some(&opts))
             .map_err(|e| {
                 log::error!("{}", e);
@@ -201,40 +209,42 @@ impl InitProcess {
         let mut pid_str = String::new();
         pid_f.read_to_string(&mut pid_str)?;
         self.pid = pid_str.parse::<isize>().unwrap(); // content of init.pid is always a number
+        self.state = ProcessState::Created;
 
-        panic!("unimplemented!")
+        Ok(())
     }
 }
 
 impl InitState for InitProcess {
     fn start(&mut self) -> io::Result<()> {
         let _m = self.mu.lock().unwrap();
-        let runtime = self
-            .runtime
-            .as_ref()
-            .ok_or_else(|| io::ErrorKind::NotFound)?;
-        runtime.start(&self.id).map_err(|e| {
+        self.runtime.start(&self.id).map_err(|e| {
             log::error!("{}", e);
             io::ErrorKind::Other
         })?;
-        self.state = Status::RUNNING;
+        self.state = ProcessState::Running;
         Ok(())
     }
 
-    fn delete(&self) -> io::Result<()> {
+    fn delete(&mut self) -> io::Result<()> {
         let _m = self.mu.lock().unwrap();
+        self.runtime.delete(&self.id, None).map_err(|e| {
+            log::error!("{}", e);
+            io::ErrorKind::Other
+        })?;
+        self.state = ProcessState::Deleted;
+        Ok(())
+    }
+
+    fn pause(&mut self) -> io::Result<()> {
         panic!("unimplemented!")
     }
 
-    fn pause(&self) -> io::Result<()> {
+    fn resume(&mut self) -> io::Result<()> {
         panic!("unimplemented!")
     }
 
-    fn resume(&self) -> io::Result<()> {
-        panic!("unimplemented!")
-    }
-
-    fn update(&self, resource_config: Option<&dyn std::any::Any>) -> io::Result<()> {
+    fn update(&mut self, resource_config: Option<&dyn std::any::Any>) -> io::Result<()> {
         panic!("unimplemented!")
     }
 
@@ -242,12 +252,18 @@ impl InitState for InitProcess {
         panic!("unimplemented!")
     }
 
-    fn kill(&self, sig: u32, all: bool) -> io::Result<()> {
+    fn kill(&mut self, sig: u32, all: bool) -> io::Result<()> {
         let _m = self.mu.lock().unwrap();
+        let opts = KillOpts::new().all(all);
+        self.runtime.kill(&self.id, sig, Some(&opts)).map_err(|e| {
+            log::error!("{}", e);
+            io::ErrorKind::Other
+        })?;
+
         panic!("unimplemented!")
     }
 
-    fn set_exited(&self, status: isize) {
+    fn set_exited(&mut self, status: isize) {
         let _m = self.mu.lock().unwrap();
         panic!("unimplemented!")
     }
@@ -257,6 +273,8 @@ impl InitState for InitProcess {
     }
 }
 
+/// Some of these implementation internally calls [`InitState`].
+/// Note that in such case InitState will take Mutex and [`InitProcess`] should not take, avoiding dead lock.
 impl Process for InitProcess {
     fn id(&self) -> String {
         self.id.clone()
@@ -298,15 +316,15 @@ impl Process for InitProcess {
         InitState::start(self)
     }
 
-    fn delete(&self) -> io::Result<()> {
+    fn delete(&mut self) -> io::Result<()> {
         InitState::delete(self)
     }
 
-    fn kill(&self, sig: u32, all: bool) -> io::Result<()> {
+    fn kill(&mut self, sig: u32, all: bool) -> io::Result<()> {
         InitState::kill(self, sig, all)
     }
 
-    fn set_exited(&self, status: isize) {
+    fn set_exited(&mut self, status: isize) {
         InitState::set_exited(self, status)
     }
 }

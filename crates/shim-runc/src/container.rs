@@ -50,7 +50,7 @@ use crate::{debug::LOG, debug_log};
 
 const OPTIONS_FILENAME: &str = "options.json";
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 /// Struct for managing runc containers.
 pub struct Container {
     mu: Arc<Mutex<()>>,
@@ -158,7 +158,7 @@ impl Container {
             config.clone(),
             opts,
             rootfs,
-        );
+        )?;
 
         debug_log!("call init create: {:?}", config);
         // create the init process
@@ -171,10 +171,11 @@ impl Container {
         }
 
         Ok(Container {
+            mu: Arc::default(),
             id,
             bundle,
             process_self: init,
-            ..Default::default()
+            processes: HashMap::new(),
         })
     }
 
@@ -262,6 +263,7 @@ impl Container {
                 .get_mut(&req.id)
                 .ok_or_else(|| ttrpc::Error::Others("process does not exists".to_string()))?
         };
+        debug_log!("call InitProcess::start(): {:?}", p);
         p.start()?;
         Ok(p.pid)
     }

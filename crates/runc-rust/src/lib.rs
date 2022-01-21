@@ -224,8 +224,6 @@ impl RuncClient {
         let child = std::process::Command::new(&self.0.command)
             .args(args)
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
             .spawn()
             .map_err(Error::ProcessSpawnError)?;
         debug_log!("spawn_raw: child spawned.");
@@ -240,18 +238,18 @@ impl RuncClient {
     /// command and command_raw returns pid, exitstatus and outputs.
     /// command_raw ignores the flag set to the client with [`RuncConfig`]
     pub fn command_raw(&self, args:& [String], combined_output: bool) -> Result<RuncResponse, Error> {
-        // let child = self.spawn_raw(args)?;
-        // let pid = child.id();
-        let pid = 1;
+        let child = self.spawn_raw(args)?;
+        let pid = child.id();
+        // let pid = 1;
         debug_log!("command_raw: wait output...");
-        let result = std::process::Command::new(&self.0.command)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(Error::CommandError)?;
-        // let result = child.wait_with_output().map_err(Error::CommandError)?;
+        // let result = std::process::Command::new(&self.0.command)
+        //     .args(args)
+        //     .stdin(Stdio::null())
+        //     .stdout(Stdio::piped())
+        //     .stderr(Stdio::piped())
+        //     .output()
+        //     .map_err(Error::CommandError)?;
+        let result = child.wait_with_output().map_err(Error::CommandError)?;
         debug_log!("command_raw: got output -> {:?}", result);
         let status = result.status;
         let stdout = String::from_utf8(result.stdout).unwrap();
