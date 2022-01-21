@@ -129,6 +129,7 @@ impl shim::Task for Service {
         _ctx: &ttrpc::TtrpcContext,
         _req: CreateTaskRequest,
     ) -> ttrpc::Result<CreateTaskResponse> {
+        debug_log!("TTRPC call: create");
         // let mut opts = CreateOpts::new().pid_file(pid_file);
         // if _req.terminal {
         //     let pty_master = PTY_MASTER.try_read().unwrap();
@@ -158,6 +159,8 @@ impl shim::Task for Service {
             )));
         }
         let pid = container.pid() as u32;
+
+        debug_log!("TTRPC call succeeded: create");
         Ok(CreateTaskResponse {
             pid,
             unknown_fields,
@@ -170,6 +173,7 @@ impl shim::Task for Service {
         _ctx: &ttrpc::TtrpcContext,
         _req: StartRequest,
     ) -> ttrpc::Result<StartResponse> {
+        debug_log!("TTRPC call: start");
         let mut c = CONTAINERS.write().unwrap();
         let container = c.get_mut(_req.get_id()).ok_or_else(|| {
             ttrpc::Error::RpcStatus(Status {
@@ -191,6 +195,7 @@ impl shim::Task for Service {
                 cached_size: _req.cached_size.clone(),
         }))?;
 
+        debug_log!("TTRPC call succeeded: start");
         Ok(StartResponse {
             pid: pid as u32,
             unknown_fields: _req.unknown_fields,

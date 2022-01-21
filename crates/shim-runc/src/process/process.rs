@@ -184,13 +184,13 @@ impl InitProcess {
         debug_log!("call RuncClient::create:");
         debug_log!("    id={}, bundle={}", config.id, config.bundle);
         debug_log!("    opts={:?}", opts);
-
         runtime
             .create(config.id.as_str(), &config.bundle, Some(&opts))
             .map_err(|e| {
                 log::error!("{}", e);
                 io::ErrorKind::Other
             })?;
+        debug_log!("RuncClient::create succeeded");
         if config.stdin != "" {
             // FIXME: have to open stdin
         }
