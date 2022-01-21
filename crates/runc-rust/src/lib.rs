@@ -55,6 +55,8 @@ use std::time::Duration;
 use tempfile::NamedTempFile;
 use tokio::time;
 
+use dbg::*;
+
 pub mod console;
 pub mod container;
 pub mod error;
@@ -65,6 +67,13 @@ pub mod specs;
 mod runc;
 mod stream;
 mod utils;
+mod debug;
+mod dbg {
+    pub use crate::debug_log;
+    pub use crate::debug::*;
+    pub use std::io::Write as DbgWrite;
+}
+
 
 /// RuncResponse is for (pid, exit status, outputs).
 #[derive(Debug, Clone)]
@@ -210,6 +219,8 @@ impl RuncClient {
     /// spawn and spawn_raw returns [`std::process::Child`].
     /// spawn_raw ignores the flag set to the client with [`RuncConfig`]
     pub fn spawn_raw(&self, args: &[String]) -> Result<Child, Error> {
+        
+        debug_log!("spawn_raw: {:?}", args);
         let child = std::process::Command::new(&self.0.command)
             .args(args)
             .stdin(Stdio::null())

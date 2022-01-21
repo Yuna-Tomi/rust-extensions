@@ -28,6 +28,8 @@ use std::path::Path;
 use std::sync::RwLock;
 use std::sync::{atomic::AtomicBool, Arc, Mutex};
 
+use crate::dbg::*;
+
 pub trait InitState {
     fn start(&mut self) -> io::Result<()>;
     fn delete(&self) -> io::Result<()>;
@@ -123,7 +125,7 @@ impl InitProcess {
         R: AsRef<Path>,
     {
         let runtime = utils::new_runc(
-            Some(opts.root),
+            opts.root,
             path,
             namespace,
             opts.binary_name,
@@ -161,7 +163,6 @@ impl InitProcess {
 
     /// Create the process with the provided config
     pub fn create(&mut self, config: CreateConfig) -> io::Result<()> {
-        Err(io::ErrorKind::NotFound)?;
         let pid_file = Path::new(&self.bundle).join("init.pid");
         if config.terminal {
             // FIXME: using console is suspended for difficulties
@@ -174,10 +175,16 @@ impl InitProcess {
             .no_pivot(self.no_pivot_root);
 
         // FIXME: apply appropriate error
+        debug_log!("extract runtime");
         let runtime = self
             .runtime
             .as_ref()
             .ok_or_else(|| io::ErrorKind::NotFound)?;
+
+        debug_log!("call RuncClient::create:");
+        debug_log!("    id={}, bundle={}", config.id, config.bundle);
+        debug_log!("    opts={:?}", opts);
+
         runtime
             .create(config.id.as_str(), &config.bundle, Some(&opts))
             .map_err(|e| {

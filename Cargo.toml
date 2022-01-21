@@ -4,6 +4,7 @@ members = [
     "crates/logging",
     "crates/shim-protos",
     "crates/shim",
+    "crates/shim-runc",
     "crates/snapshots",
-	"crates/runc-rust",
+    "crates/runc-rust",
 ]

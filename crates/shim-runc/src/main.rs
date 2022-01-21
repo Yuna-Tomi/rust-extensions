@@ -21,6 +21,7 @@ pub use ttrpc;
 pub mod options;
 
 pub mod container;
+mod debug;
 pub mod process;
 pub mod service;
 mod utils;
@@ -29,9 +30,17 @@ pub mod v2 {
     pub use crate::options::oci::*;
 }
 
+pub mod dbg {
+    pub use crate::debug::*;
+    pub use crate::debug_log;
+    pub use std::io::Write as DbgWrite;
+}
+use dbg::*;
+
 use containerd_shim as shim;
 use service::Service;
 fn main() {
     // all arguments will be parsed inside "run" function.
     shim::run::<Service>("io.containerd.runc.v2");
+    debug_log!("stop main.");
 }

@@ -14,6 +14,9 @@
    limitations under the License.
 */
 
+use nix::errno::Errno;
+use nix::sys::stat;
+use nix::unistd;
 use protobuf::reflect::ProtobufValue;
 use serde_json;
 use std::collections::HashMap;
@@ -41,6 +44,9 @@ use protos::shim::{
         ExecProcessResponse, KillRequest, StartRequest, StartResponse,
     },
 };
+
+// for debug
+use crate::{debug::LOG, debug_log};
 
 const OPTIONS_FILENAME: &str = "options.json";
 
@@ -80,11 +86,17 @@ impl Container {
         }
 
         let rootfs = if mounts.len() > 0 {
-            Path::new(&req.bundle).join("rootfs")
+            let path = Path::new(&req.bundle).join("rootfs");
+            debug_log!("mkdir rootfs: {:?}", path);
+            match unistd::mkdir(&path, stat::Mode::from_bits_truncate(0o711)) {
+                Ok(_) | Err(Errno::EEXIST) => {}
+                Err(e) => return Err(io::Error::from(e)),
+            };
+            path
         } else {
             PathBuf::new()
         };
-
+        debug_log!("mkdir succeeded! rootfs={:?}", rootfs);
 
         let config = CreateConfig {
             id: req.id.clone(),
@@ -99,7 +111,13 @@ impl Container {
         };
 
         // Write options to file, which will be removed when shim stops.
-        write_options(&req.bundle, &opts)?;
+        match write_options(&req.bundle, &opts) {
+            Ok(_) => {}
+            Err(e) => {
+                debug_log!("{}", e);
+                return Err(e);
+            }
+        }
 
         // For historical reason, we write binary name as well as the entire opts
         write_runtime(&req.bundle, &opts.binary_name)?;
@@ -107,7 +125,7 @@ impl Container {
         // split functionality in order to cleanup rootfs when error occurs after mount.
         Self::inner_new(&rootfs, req, namespace, opts, config, mounts).map_err(|e| {
             if let Err(_) = sys_mount::unmount(rootfs, UnmountFlags::empty()) {
-                warn!("failed to cleanup rootfs mount");
+                debug_log!("failed to cleanup mounts.");
             }
             e
         })
@@ -125,10 +143,14 @@ impl Container {
         R: AsRef<Path>,
     {
         for mnt in mounts {
+            debug_log!("call utils::mount: {:?}", mnt);
             utils::mount(mnt, &rootfs)?;
+            debug_log!("mount succeeded!");
         }
         let id = req.id.clone();
         let bundle = req.bundle.clone();
+
+        debug_log!("call InitProcess::new: {:?}", bundle);
         let mut init = InitProcess::new(
             &bundle,
             Path::new(&bundle).join("work"),
@@ -138,9 +160,11 @@ impl Container {
             rootfs,
         );
 
+        debug_log!("call init create: {:?}", config);
         // create the init process
         init.create(config)?;
         let pid = init.pid();
+        debug_log!("init successfully created: pid={}", pid);
 
         if pid > 0 {
             // FIXME: setting config for cgroup
@@ -341,13 +365,16 @@ where
     P: AsRef<Path>,
 {
     let file_path = path.as_ref().join(OPTIONS_FILENAME);
+    debug_log!("write options.");
     let f = fs::OpenOptions::new()
+        .create(true)
         .write(true)
         .mode(0o600)
         .open(&file_path)?;
     let mut writer = BufWriter::new(f);
     opts.write_to_writer(&mut writer)?;
     writer.flush()?;
+    debug_log!("write options succeeded: {:?}", file_path.as_os_str());
     Ok(())
 }
 
@@ -365,13 +392,16 @@ where
     P: AsRef<Path>,
     R: AsRef<str>,
 {
+    debug_log!("write runtime.");
     let file_path = path.as_ref().join("runtime");
     let f = fs::OpenOptions::new()
+        .create(true)
         .write(true)
         .mode(0o600)
         .open(&file_path)?;
     let mut writer = BufWriter::new(f);
     writer.write_all(runtime.as_ref().as_bytes())?;
+    debug_log!("write runtime succeeded: {:?}", file_path.as_os_str());
     Ok(())
 }
 

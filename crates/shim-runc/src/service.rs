@@ -44,6 +44,8 @@ use shim::{api, ExitSignal, TtrpcContext, TtrpcResult};
 use ttrpc::{Code, Status};
 use uuid::Uuid;
 
+use crate::dbg::*;
+
 // group labels specifies how the shim groups services.
 // currently supports a runc.v2 specific .group label and the
 // standard k8s pod label.  Order matters in this list
@@ -93,12 +95,14 @@ impl shim::Shim for Service {
     ) -> Self {
         let runtime_id = _runtime_id.to_string();
         let exit = ExitSignal::default();
+        debug_log!("shim service successfully created.");
         Self { runtime_id, exit }
     }
 
     #[cfg(target_os = "linux")]
     fn start_shim(&mut self, opts: shim::StartOpts) -> Result<String, shim::Error> {
         let address = shim::spawn(opts, Vec::new())?;
+        debug_log!("shim successfully spawned.");
         Ok(address)
     }
 
@@ -130,14 +134,22 @@ impl shim::Task for Service {
         //     let pty_master = PTY_MASTER.try_read().unwrap();
         //     opts = opts.console_socket(&pty_master.console_socket);
         // }
-        return debug_status!();
 
         let id = _req.id.clone();
         let unknown_fields = _req.unknown_fields.clone();
         let cached_size = _req.cached_size.clone();
         // FIXME: error handling
-
-        let container = Container::new(_req).unwrap();
+        debug_log!("call Container new.");
+        let container = match Container::new(_req) {
+            Ok(c) => c,
+            Err(e) => {
+                debug_log!("container create failed: {:?}", e);
+                return Err(ttrpc::Error::Others(format!(
+                    "container create failed: id={}, err={}",
+                    id, e
+                )));
+            }
+        };
         let c = CONTAINERS.write().unwrap();
         if c.contains_key(&id) {
             return Err(ttrpc::Error::Others(format!(
