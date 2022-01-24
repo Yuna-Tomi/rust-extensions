@@ -15,9 +15,7 @@
 */
 
 use crate::container::Container;
-use crate::process::process::{
-    Process, ProcessState
-};
+use crate::process::state::ProcessState;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::sleep;
@@ -32,6 +30,7 @@ use nix::pty::PtyMaster;
 use once_cell::sync::Lazy;
 use protobuf::well_known_types::Timestamp;
 use protobuf::{RepeatedField, SingularPtrField};
+use protos::shim::task::Status as TaskStatus;
 use protos::shim::{
     empty::Empty,
     shim::{
@@ -47,7 +46,6 @@ use runc::{RuncClient, RuncConfig};
 use shim::{api, ExitSignal, TtrpcContext, TtrpcResult};
 use ttrpc::{Code, Status};
 use uuid::Uuid;
-use protos::shim::task::Status as TaskStatus;
 
 use crate::dbg::*;
 
@@ -134,7 +132,7 @@ impl shim::Task for Service {
         _ctx: &ttrpc::TtrpcContext,
         _req: CreateTaskRequest,
     ) -> ttrpc::Result<CreateTaskResponse> {
-        debug_log!("TTRPC call: create");
+        debug_log!("TTRPC call: create\nid={}", _req.id);
         // let mut opts = CreateOpts::new().pid_file(pid_file);
         // if _req.terminal {
         //     let pty_master = PTY_MASTER.try_read().unwrap();
@@ -167,7 +165,7 @@ impl shim::Task for Service {
             let _ = c.insert(id, container);
         }
 
-        debug_log!("TTRPC call succeeded: create");
+        debug_log!("TTRPC call succeeded: create\npid={}", pid);
         Ok(CreateTaskResponse {
             pid,
             unknown_fields,
@@ -180,7 +178,11 @@ impl shim::Task for Service {
         _ctx: &ttrpc::TtrpcContext,
         _req: StartRequest,
     ) -> ttrpc::Result<StartResponse> {
-        debug_log!("TTRPC call: start");
+        debug_log!(
+            "TTRPC call: start\nid={}, exec_id={}",
+            _req.get_id(),
+            _req.get_exec_id()
+        );
         let mut c = CONTAINERS.write().unwrap();
         debug_log!("request: id={}", _req.get_id());
 
@@ -213,15 +215,29 @@ impl shim::Task for Service {
         })
     }
 
-    fn exec(&self, _ctx: &::ttrpc::TtrpcContext, _req: ExecProcessRequest) -> ::ttrpc::Result<Empty> {
+    fn exec(
+        &self,
+        _ctx: &::ttrpc::TtrpcContext,
+        _req: ExecProcessRequest,
+    ) -> ::ttrpc::Result<Empty> {
         debug_log!("TTRPC call: exec");
         debug_log!("request: id={}", _req.get_id());
-        Err(::ttrpc::Error::RpcStatus(::ttrpc::get_status(::ttrpc::Code::NOT_FOUND, "/containerd.task.v2.Task/Exec is not supported".to_string())))
+        Err(::ttrpc::Error::RpcStatus(::ttrpc::get_status(
+            ::ttrpc::Code::NOT_FOUND,
+            "/containerd.task.v2.Task/Exec is not supported".to_string(),
+        )))
     }
 
-    fn state(&self, _ctx: &ttrpc::TtrpcContext, _req: StateRequest) -> ttrpc::Result<StateResponse> {
-        debug_log!("TTRPC call: state");
-        debug_log!("request: id={}", _req.get_id());
+    fn state(
+        &self,
+        _ctx: &ttrpc::TtrpcContext,
+        _req: StateRequest,
+    ) -> ttrpc::Result<StateResponse> {
+        debug_log!(
+            "TTRPC call: state\nid={}, exec_id={}",
+            _req.get_id(),
+            _req.get_exec_id()
+        );
 
         let c = CONTAINERS.write().unwrap();
         let container = c.get(_req.get_id()).ok_or_else(|| {
@@ -257,11 +273,15 @@ impl shim::Task for Service {
         };
 
         let stdio = p.stdio();
-        debug_log!("TTRPC call succeeded: state");
+        debug_log!(
+            "TTRPC call succeeded: state\nid={}, exec_id={}",
+            _req.get_id(),
+            _req.get_exec_id()
+        );
         Ok(StateResponse {
             id: _req.exec_id,
             bundle: p.bundle.clone(),
-            pid: p.pid as u32,
+            pid: p.pid() as u32,
             status,
             stdin: stdio.stdin,
             stdout: stdio.stdout,
@@ -275,8 +295,11 @@ impl shim::Task for Service {
     }
 
     fn wait(&self, _ctx: &ttrpc::TtrpcContext, _req: WaitRequest) -> ttrpc::Result<WaitResponse> {
-        debug_log!("TTRPC call: wait");
-        debug_log!("request: id={}", _req.get_id());
+        debug_log!(
+            "TTRPC call: wait\nid={}, exec_id={}",
+            _req.get_id(),
+            _req.get_exec_id()
+        );
 
         let mut c = CONTAINERS.write().unwrap();
         let container = c.get_mut(_req.get_id()).ok_or_else(|| {
@@ -300,6 +323,7 @@ impl shim::Task for Service {
             })
         })?;
 
+        debug_log!("call InitProcess::wait");
         p.wait().map_err(|e| {
             ttrpc::Error::RpcStatus(Status {
                 code: Code::NOT_FOUND,
@@ -311,30 +335,29 @@ impl shim::Task for Service {
         })?;
 
         // Might be ugly hack
+        debug_log!("InitProcess::wait succeeded.");
         let exited_at = match p.exited_at() {
-            Some(t) => Some(
-            Timestamp {
-                nanos: t.timestamp_nanos() as i32, // ugly hack
-                ..Default::default()
+            Some(t) => Some(Timestamp {
+                // nanos: t.timestamp_nanos() as i32, // ugly hack
+                ..Default::default() // all default, just for debug
             }),
             None => None,
         };
-        
-        debug_log!("TTRPC call succeeded: wait");
 
+        debug_log!(
+            "TTRPC call: wait succeeded \nid={}, exec_id={}",
+            _req.get_id(),
+            _req.get_exec_id()
+        );
         Ok(WaitResponse {
-            exit_status: p.exit_status() as u32, 
+            exit_status: p.exit_status() as u32,
             exited_at: SingularPtrField::from_option(exited_at),
             unknown_fields: _req.unknown_fields,
             cached_size: _req.cached_size,
         })
     }
 
-    fn kill(
-        &self,
-        _ctx: &ttrpc::TtrpcContext,
-        _req: KillRequest,
-    ) -> ttrpc::Result<Empty> {
+    fn kill(&self, _ctx: &ttrpc::TtrpcContext, _req: KillRequest) -> ttrpc::Result<Empty> {
         debug_log!("TTRPC call: kill");
         debug_log!("request: id={}", _req.get_id());
 
@@ -358,7 +381,7 @@ impl shim::Task for Service {
                 cached_size: _req.cached_size.clone(),
             })
         })?;
-        
+
         debug_log!("TTRPC succeeded: kill");
         Ok(containerd_shim_protos::shim::empty::Empty {
             unknown_fields: _req.unknown_fields,
@@ -371,7 +394,7 @@ impl shim::Task for Service {
         _ctx: &ttrpc::TtrpcContext,
         _req: DeleteRequest,
     ) -> ttrpc::Result<DeleteResponse> {
-        debug_log!("TTRPC call: kill");
+        debug_log!("TTRPC call: delete");
         debug_log!("request: id={}", _req.get_id());
 
         let mut c = CONTAINERS.write().unwrap();
@@ -387,35 +410,31 @@ impl shim::Task for Service {
 
         match container.delete(&_req) {
             Ok(Some(p)) => {
-                debug_log!("TTRPC call succeeded: kill");
+                debug_log!("TTRPC call succeeded: delete");
                 // Might be ugly hack
                 let exited_at = match p.exited_at() {
-                    Some(t) => Some(
-                    Timestamp {
-                        nanos: t.timestamp_nanos() as i32, // ugly hack
-                        ..Default::default()
+                    Some(t) => Some(Timestamp {
+                        // nanos: t.timestamp_nanos() as i32, // ugly hack
+                        ..Default::default() // all default, just for debug.
                     }),
                     None => None,
                 };
 
-                Ok(DeleteResponse{
-                    pid: p.pid as u32,
+                Ok(DeleteResponse {
+                    pid: p.pid() as u32,
                     exit_status: p.exit_status() as u32,
                     exited_at: SingularPtrField::from_option(exited_at),
                     unknown_fields: _req.unknown_fields,
                     cached_size: _req.cached_size,
                 })
             }
-            _ => {
-                    Err(ttrpc::Error::RpcStatus(Status {
-                    code: Code::NOT_FOUND,
-                    message: "couldn't kill the process.".to_string(),
-                    details: RepeatedField::new(),
-                    unknown_fields: _req.unknown_fields,
-                    cached_size: _req.cached_size,
-                }))
-
-            }
+            _ => Err(ttrpc::Error::RpcStatus(Status {
+                code: Code::NOT_FOUND,
+                message: "couldn't kill the process.".to_string(),
+                details: RepeatedField::new(),
+                unknown_fields: _req.unknown_fields,
+                cached_size: _req.cached_size,
+            })),
         }
     }
 
@@ -437,6 +456,7 @@ impl shim::Task for Service {
         Ok(Empty::default())
     }
 }
+
 
 fn err_mapping(e: RuncError) -> (Code, String) {
     (

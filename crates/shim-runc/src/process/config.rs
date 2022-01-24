@@ -13,6 +13,11 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 */
+
+// NOTE: Go reference
+// https://github.com/containerd/containerd/blob/main/pkg/process/types.go
+// https://github.com/containerd/containerd/blob/main/pkg/stdio/stdio.go
+
 use containerd_shim_protos as protos;
 use protobuf::well_known_types::Any;
 use protos::shim::mount::Mount;
@@ -68,3 +73,11 @@ pub struct ExecConfig {
 
 // checkpoint is not supported now
 // pub struct ChecoutConfig {}
+
+#[derive(Debug, Clone, Default)]
+pub struct StdioConfig {
+    pub stdin: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub terminal: bool,
+}

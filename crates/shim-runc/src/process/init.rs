@@ -1,101 +1,69 @@
 /*
-   Copyright The containerd Authors.
+   copyright the containerd authors.
 
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
+   licensed under the apache license, version 2.0 (the "license");
+   you may not use this file except in compliance with the license.
+   you may obtain a copy of the license at
 
-       http://www.apache.org/licenses/LICENSE-2.0
+       http://www.apache.org/licenses/license-2.0
 
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
+   unless required by applicable law or agreed to in writing, software
+   distributed under the license is distributed on an "as is" basis,
+   without warranties or conditions of any kind, either express or implied.
+   see the license for the specific language governing permissions and
+   limitations under the license.
 */
 
+// NOTE: Go references
+// https://github.com/containerd/containerd/blob/main/pkg/process/init.go
+// https://github.com/containerd/containerd/blob/main/pkg/process/init_state.go
+
 use crate::options::oci::Options;
-use crate::process::config::{CreateConfig, ExecConfig};
 use crate::utils;
-use chrono::{Utc, DateTime};
+use super::traits::{
+    ContainerProcess, InitState, Process, 
+};
+use super::config::{
+    CreateConfig,
+    ExecConfig, StdioConfig,
+};
+use super::state::{
+    ProcessState,
+};
+use chrono::{DateTime, Utc};
 use containerd_runc_rust as runc;
 use containerd_shim_protos as protos;
 use nix::{
-    unistd::Pid,
     sys::wait::{self, WaitPidFlag, WaitStatus},
+    unistd::Pid,
 };
-use runc::RuncClient;
+
+use futures::{
+    channel::oneshot::{self, Receiver},
+    executor,
+};
 use runc::options::{DeleteOpts, KillOpts};
+use runc::RuncClient;
 use std::fs::OpenOptions;
 use std::io::{self, Read};
 use std::path::Path;
 use std::sync::RwLock;
 use std::sync::{atomic::AtomicBool, Arc, Mutex};
+use std::thread;
 
 use crate::dbg::*;
 
-pub trait InitState {
-    fn start(&mut self) -> io::Result<()>;
-    fn delete(&mut self) -> io::Result<()>;
-    fn pause(&mut self) -> io::Result<()>;
-    fn resume(&mut self) -> io::Result<()>;
-    fn update(&mut self, resource_config: Option<&dyn std::any::Any>) -> io::Result<()>;
-    // FIXME: suspended for difficulties
-    // fn checkpoint(&self) -> io::Result<()>;
-    fn exec(&self, config: ExecConfig) -> io::Result<()>; // FIXME: Result<dyn impl Process>
-    fn kill(&mut self, sig: u32, all: bool) -> io::Result<()>;
-    fn set_exited(&mut self, status: isize);
-    fn state(&self) -> io::Result<ProcessState>;
-}
-
-pub trait Process {
-    fn id(&self) -> String;
-    fn pid(&self) -> isize;
-    fn exit_status(&self) -> isize;
-    fn exited_at(&self) -> Option<chrono::DateTime<Utc>>;
-    // FIXME: suspended for difficulties
-    // fn stdin(&self) -> ???;
-    fn stdio(&self) -> StdioConfig;
-    fn wait(&mut self) -> io::Result<()>;
-    // FIXME: suspended for difficulties
-    // fn resize(&self) -> io::Result<()>;
-    fn start(&mut self) -> io::Result<()>;
-    fn delete(&mut self) -> io::Result<()>;
-    fn kill(&mut self, sig: u32, all: bool) -> io::Result<()>;
-    fn set_exited(&mut self, status: isize);
-    fn state(&self) -> io::Result<ProcessState>;
-}
-
-pub trait ContainerProcess: InitState + Process {}
-
-#[derive(Debug, Clone, Copy)]
-pub enum ProcessState {
-    Unknown,
-    Created,
-    // CreatedCheckpoint,
-    Running,
-    Paused,
-    Pausing,
-    Stopped,
-    Deleted,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct StdioConfig {
-    pub stdin: String,
-    pub stdout: String,
-    pub stderr: String,
-    pub terminal: bool,
-}
 
 // Might be ugly hack: in Rust, it is not good idea to hold Mutex inside InitProcess because it disables to clone.
 /// Init process for a container
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct InitProcess {
     pub mu: Arc<Mutex<()>>,
 
     // represents state transition
     pub state: ProcessState,
+
+    wait_block: Option<Receiver<()>>,
 
     pub work_dir: String,
     pub id: String,
@@ -103,13 +71,13 @@ pub struct InitProcess {
     // FIXME: suspended for difficulties
     // console: ???,
     // platform: ???,
-    pub runtime: RuncClient,
+    runtime: RuncClient,
 
     /// The pausing state
-    pub pausing: bool, // here using primitive bool because InitProcess is designed to allow access only through Arc<Mutex<Self>>.
-    pub status: isize,
-    pub exited: Option<chrono::DateTime<Utc>>,
-    pub pid: isize,
+    pausing: bool, // here using primitive bool because InitProcess is designed to allow access only through Arc<Mutex<Self>>.
+    status: isize,
+    exited: Option<chrono::DateTime<Utc>>,
+    pid: isize,
     // FIXME: suspended for difficulties
     // closers: Vec<???>,
     // stdin: ???,
@@ -148,9 +116,8 @@ impl InitProcess {
             namespace,
             opts.binary_name,
             opts.systemd_cgroup,
-        ).map_err(|_|
-            io::Error::from(io::ErrorKind::NotFound),
-        )?;
+        )
+        .map_err(|_| io::Error::from(io::ErrorKind::NotFound))?;
         let stdio = StdioConfig {
             stdin: config.stdin,
             stdout: config.stdout,
@@ -161,6 +128,7 @@ impl InitProcess {
         Ok(Self {
             mu: Arc::default(),
             state: ProcessState::Unknown,
+            wait_block: None,
             work_dir: work_dir
                 .as_ref()
                 .to_string_lossy()
@@ -199,19 +167,22 @@ impl InitProcess {
         debug_log!("call RuncClient::create:");
         debug_log!("    id={}, bundle={}", config.id, config.bundle);
         debug_log!("    opts={:?}", opts);
-        self.runtime
+        let (tx, rx) = oneshot::channel::<()>();
+        self.wait_block = Some(rx);
+        let res = self
+            .runtime
             .create(config.id.as_str(), &config.bundle, Some(&opts))
             .map_err(|e| {
                 log::error!("{}", e);
                 io::ErrorKind::Other
             })?;
         debug_log!("RuncClient::create succeeded");
+        tx.send(()).unwrap(); // notify successfully created.
+
         if config.stdin != "" {
             // FIXME: have to open stdin
         }
 
-        // FIXME: appropriate error message
-        // read pid from pid file (after container created)
         let mut pid_f = OpenOptions::new().read(true).open(&pid_file)?;
         let mut pid_str = String::new();
         pid_f.read_to_string(&mut pid_str)?;
@@ -220,15 +191,40 @@ impl InitProcess {
 
         Ok(())
     }
+
+    pub fn start(&mut self) -> io::Result<()> { InitState::start(self) }
+    pub fn delete(&mut self) -> io::Result<()> { InitState::delete(self) }
+    pub fn state(&mut self) -> io::Result<ProcessState> { InitState::state(self) }
+    pub fn pause(&mut self) -> io::Result<()> { InitState::pause(self) }
+    pub fn resume(&mut self) -> io::Result<()> { InitState::resume(self) }
+    pub fn exec(&mut self, config: ExecConfig) -> io::Result<()> { InitState::exec(self, config) }
+    pub fn kill(&mut self, sig: u32, all: bool) -> io::Result<()> { InitState::kill(self, sig, all) }
+    pub fn set_exited(&mut self, status: isize) { InitState::set_exited(self, status) }
+    pub fn update(&mut self, resource_config: Option<&dyn std::any::Any>) -> io::Result<()> {InitState::update(self, resource_config)}
+    pub fn pid(&self) -> isize { Process::pid(self) }
+    pub fn exit_status(&self) -> isize { Process::exit_status(self) }
+    pub fn exited_at(&self) -> Option<chrono::DateTime<Utc>> { Process::exited_at(self) }
+    pub fn stdio(&self) -> StdioConfig { Process::stdio(self) }
+    pub fn wait(&mut self) -> io::Result<()> { Process::wait(self) }
 }
+
+impl ContainerProcess for InitProcess {}
 
 impl InitState for InitProcess {
     fn start(&mut self) -> io::Result<()> {
         let _m = self.mu.lock().unwrap();
-        self.runtime.start(&self.id).map_err(|e| {
+        let (tx, rx) = oneshot::channel::<()>();
+        // wait for wait() on creation process
+        // while let Some(_) = self.wait_block {} // this produce deadlock because of Mutex of containers at Service
+        // self.wait_block = Some(rx);
+        debug_log!("RuncClient::create succeeded");
+        // tx.send(()).unwrap(); // notify successfully started.
+        
+        let res = self.runtime.start(&self.id).map_err(|e| {
             log::error!("{}", e);
             io::ErrorKind::Other
         })?;
+        debug_log!("started container: res={:?}", res);
         self.state = ProcessState::Running;
         Ok(())
     }
@@ -317,17 +313,32 @@ impl Process for InitProcess {
 
     fn wait(&mut self) -> io::Result<()> {
         // FIXME: Might be ugly hack
-        loop {
-            match wait::waitpid(Pid::from_raw(self.pid as i32), None) {
-                Ok(WaitStatus::Exited(_, status)) => {
-                    InitState::set_exited(self, status as isize);
-                    return Ok(());
-                }
-                Err(e) => return Err(io::Error::from_raw_os_error(e as i32)),
-                _ => {}
-            }
-        }
+        debug_log!("InitProcess::wait pid={}", self.pid);
+        let rx = self
+            .wait_block
+            .take()
+            .ok_or_else(|| io::ErrorKind::NotFound)?;
+        let x = executor::block_on(async {
+            // FIXME: need appropriate error handling
+            rx.await.map_err(|e| io::ErrorKind::Other)
+        })?;
+        Ok(())
     }
+
+    // fn wait(&mut self) -> io::Result<()> {
+    //     // FIXME: Might be ugly hack
+    //     debug_log!("InitProcess::wait pid={}", self.pid);
+    //     loop {
+    //         match wait::waitpid(Pid::from_raw(self.pid as i32), None) {
+    //             Ok(WaitStatus::Exited(_, status)) => {
+    //                 InitState::set_exited(self, status as isize);
+    //                 return Ok(());
+    //             }
+    //             Err(e) => return Err(io::Error::from_raw_os_error(e as i32)),
+    //             _ => {}
+    //         }
+    //     }
+    // }
 
     fn start(&mut self) -> io::Result<()> {
         InitState::start(self)

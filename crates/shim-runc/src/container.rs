@@ -28,10 +28,10 @@ use std::sync::{Arc, Mutex};
 use sys_mount::{MountFlags, SupportedFilesystems, UnmountFlags};
 
 use crate::options::oci::Options;
-use crate::process::process::InitState;
+use crate::process::init;
 use crate::process::{
     config::{CreateConfig, MountConfig},
-    process::{InitProcess, Process},
+    init::{InitProcess},
 };
 
 use crate::utils::{self, new_runc};
@@ -51,7 +51,7 @@ use crate::{debug::LOG, debug_log};
 
 const OPTIONS_FILENAME: &str = "options.json";
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 /// Struct for managing runc containers.
 pub struct Container {
     mu: Arc<Mutex<()>>,
@@ -198,7 +198,7 @@ impl Container {
 
     pub fn pid(&self) -> isize {
         let _m = self.mu.lock().unwrap();
-        self.process_self.pid
+        self.process_self.pid()
     }
 
     // pub fn cgroup(&self) /* -> [] */
@@ -233,8 +233,7 @@ impl Container {
     //     }
     // }
 
-    pub fn process_remove(&mut self, id: &str) -> Option<InitProcess>
-    {
+    pub fn process_remove(&mut self, id: &str) -> Option<InitProcess> {
         let _m = self.mu.lock().unwrap();
         self.processes.remove(id)
     }
@@ -271,13 +270,13 @@ impl Container {
     pub fn start(&mut self, req: &StartRequest) -> Result<isize, Box<dyn std::error::Error>> {
         let p = self.process_mut(&req.id)?;
         debug_log!("call InitProcess::start(): {:?}", p);
-        InitState::start(p)?;
-        Ok(p.pid)
+        p.start()?;
+        Ok(p.pid())
     }
 
     pub fn delete(&mut self, req: &DeleteRequest) -> io::Result<Option<InitProcess>> {
         let p = self.process_mut(&req.exec_id)?;
-        InitState::delete(p)?;
+        p.delete()?;
         if req.exec_id != "" {
             Ok(self.process_remove(&req.exec_id))
         } else {
@@ -311,7 +310,7 @@ impl Container {
 
     pub fn kill(&mut self, req: &KillRequest) -> io::Result<()> {
         let p = self.process_mut(&req.id)?;
-        InitState::kill(p, req.signal, req.all)
+        p.kill(req.signal, req.all)
     }
 
     pub fn close_io(&self) -> Result<(), Box<dyn std::error::Error>> {
