@@ -36,7 +36,6 @@ use crate::error::Error;
 use crate::utils;
 use log::warn;
 use mio::net::{SocketAddr, UnixListener};
-use tempfile::TempDir;
 use std::env;
 use std::ffi::c_void;
 use std::os::unix::io::AsRawFd;
@@ -44,6 +43,7 @@ use std::os::unix::io::FromRawFd;
 use std::path::{Path, PathBuf};
 use std::{fs, ptr};
 use tempfile;
+use tempfile::TempDir;
 // use tokio::future::poll_fn;
 use tokio::fs::File;
 use tokio::io::unix::AsyncFd;
@@ -171,7 +171,9 @@ mod tests {
     #[test]
     fn temporal_sock() {
         match ReceivePtyMaster::new_with_temp_sock() {
-            Ok(receiver) => { drop(receiver); }
+            Ok(receiver) => {
+                drop(receiver);
+            }
             Err(e) => panic!("couldn't create temporal socket. {}", e),
         }
     }

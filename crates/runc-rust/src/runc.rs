@@ -32,17 +32,13 @@
  * limitations under the License.
  */
 
-
-use crate::LogFormat;
 use crate::error::Error;
 use crate::options::Args;
-use crate::utils::{
-    self, DEBUG, LOG, LOG_FORMAT, SYSTEMD_CGROUP, ROOT, ROOTLESS,
-    DEFAULT_COMMAND,
-};
+use crate::utils::{self, DEBUG, DEFAULT_COMMAND, LOG, LOG_FORMAT, ROOT, ROOTLESS, SYSTEMD_CGROUP};
+use crate::LogFormat;
 
-use std::time::Duration;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Inner struct for runc configuration
 #[derive(Debug, Clone, Default)]
@@ -147,7 +143,6 @@ impl RuncConfig {
         })
     }
 }
-
 
 /// Inner Runtime for RuncClient/RuncAsyncClient
 #[derive(Debug, Clone)]

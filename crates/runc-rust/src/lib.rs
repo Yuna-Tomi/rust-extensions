@@ -36,9 +36,7 @@
 
 use crate::container::Container;
 use crate::error::Error;
-use crate::events::{
-    Event, Stats,
-};
+use crate::events::{Event, Stats};
 use crate::options::*;
 use crate::specs::{LinuxResources, Process};
 
@@ -50,7 +48,7 @@ use std::fmt::{self, Display};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio, ExitStatus};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::Duration;
 use tempfile::NamedTempFile;
 use tokio::time;
@@ -59,27 +57,29 @@ use dbg::*;
 
 pub mod console;
 pub mod container;
+mod debug;
 pub mod error;
 pub mod events;
+pub mod io;
 pub mod monitor;
 pub mod options;
-pub mod specs;
 mod runc;
+pub mod specs;
 mod stream;
 mod utils;
-mod debug;
 mod dbg {
-    pub use crate::debug_log;
     pub use crate::debug::*;
+    pub use crate::debug_log;
     pub use std::io::Write as DbgWrite;
 }
 
+type Result<T> = std::result::Result<T, crate::error::Error>;
 
 /// RuncResponse is for (pid, exit status, outputs).
 #[derive(Debug, Clone)]
 pub struct RuncResponse {
     pub pid: u32,
-    pub status: ExitStatus, 
+    pub status: ExitStatus,
     pub output: String,
 }
 
@@ -125,7 +125,6 @@ impl Display for LogFormat {
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct RuncConfig(runc::RuncConfig);
-    
 
 impl RuncConfig {
     pub fn new() -> Self {
@@ -198,11 +197,11 @@ impl RuncConfig {
         self
     }
 
-    pub fn build(self) -> Result<RuncClient, Error> {
+    pub fn build(self) -> Result<RuncClient> {
         Ok(RuncClient(self.0.build()?))
     }
 
-    pub fn build_async(self) -> Result<RuncAsyncClient, Error> {
+    pub fn build_async(self) -> Result<RuncAsyncClient> {
         Ok(RuncAsyncClient(self.0.build()?))
     }
 }
@@ -212,14 +211,13 @@ pub struct RuncClient(runc::Runc);
 
 impl RuncClient {
     /// Create a new runc client from the supplied configuration
-    pub fn from_config(config: RuncConfig) -> Result<Self, Error> {
+    pub fn from_config(config: RuncConfig) -> Result<Self> {
         config.build()
     }
 
     /// spawn and spawn_raw returns [`std::process::Child`].
     /// spawn_raw ignores the flag set to the client with [`RuncConfig`]
-    pub fn spawn_raw(&self, args: &[String]) -> Result<Child, Error> {
-        
+    pub fn spawn_raw(&self, args: &[String]) -> Result<Child> {
         debug_log!("spawn_raw: {:?}", args);
         let child = std::process::Command::new(&self.0.command)
             .args(args)
@@ -230,25 +228,17 @@ impl RuncClient {
         Ok(child)
     }
 
-    pub fn spawn(&self, args: &[String]) -> Result<Child, Error> {
+    pub fn spawn(&self, args: &[String]) -> Result<Child> {
         let args = [&self.0.args()?, args].concat();
         self.spawn_raw(&args)
     }
-    
+
     /// command and command_raw returns pid, exitstatus and outputs.
     /// command_raw ignores the flag set to the client with [`RuncConfig`]
-    pub fn command_raw(&self, args:& [String], combined_output: bool) -> Result<RuncResponse, Error> {
+    pub fn command_raw(&self, args: &[String], combined_output: bool) -> Result<RuncResponse> {
         let child = self.spawn_raw(args)?;
         let pid = child.id();
-        // let pid = 1;
         debug_log!("command_raw: wait output...");
-        // let result = std::process::Command::new(&self.0.command)
-        //     .args(args)
-        //     .stdin(Stdio::null())
-        //     .stdout(Stdio::piped())
-        //     .stderr(Stdio::piped())
-        //     .output()
-        //     .map_err(Error::CommandError)?;
         let result = child.wait_with_output().map_err(Error::CommandError)?;
         debug_log!("command_raw: got output -> {:?}", result);
         let status = result.status;
@@ -258,12 +248,14 @@ impl RuncClient {
         if status.success() {
             Ok(if combined_output {
                 RuncResponse {
-                    pid, status,
-                    output: stdout + stderr.as_str()
+                    pid,
+                    status,
+                    output: stdout + stderr.as_str(),
                 }
             } else {
                 RuncResponse {
-                    pid, status,
+                    pid,
+                    status,
                     output: stdout,
                 }
             })
@@ -279,18 +271,66 @@ impl RuncClient {
     }
 
     #[cfg(target_os = "linux")]
-    pub fn command(&self, args: &[String], combined_output: bool) -> Result<RuncResponse, Error> {
+    pub fn command(&self, args: &[String]) -> Result<Command> {
         let args = [&self.0.args()?, args].concat();
-        self.command_raw(&args, combined_output)
+        let mut cmd = Command::new(&self.0.command);
+        cmd.args(&args).env_remove("NOTIFY_SOCKET"); // NOTIFY_SOCKET introduces a special behavior in runc but should only be set if invoked from systemd
+        Ok(cmd)
     }
 
     #[cfg(not(target_os = "linux"))]
-    pub fn command(&self, args: &[String]) -> Result<(), Error> {
+    pub fn command(&self, args: &[String]) -> Result<()> {
         Err(Error::UnimplementedError("command".to_string()))
     }
 
-    pub fn checkpoint(&self) -> Result<(), Error> {
+    pub fn checkpoint(&self) -> Result<()> {
         Err(Error::UnimplementedError("checkpoint".to_string()))
+    }
+
+    fn launch(
+        &self,
+        mut cmd: Command,
+        combined_output: bool,
+        forget: bool,
+    ) -> Result<RuncResponse> {
+        let child = cmd.spawn().map_err(|e| {
+            debug_log!("error on spawn: {}", e);
+            Error::ProcessSpawnError(e)
+        })?;
+        let pid = child.id();
+        debug_log!("command launch {:#?}", cmd);
+        let result = child.wait_with_output().map_err(Error::CommandError)?;
+        let status = result.status;
+        let stdout = String::from_utf8(result.stdout).unwrap();
+        let stderr = String::from_utf8(result.stderr).unwrap();
+        // forget Command, in order to use fds passed to command after this function.
+        if forget {
+            std::mem::forget(cmd);
+        }
+
+        if status.success() {
+            if combined_output {
+                Ok(RuncResponse {
+                    pid,
+                    status,
+                    output: stdout + stderr.as_str(),
+                })
+            } else {
+                Ok(RuncResponse {
+                    pid,
+                    status,
+                    output: stdout,
+                })
+            }
+        } else {
+            // [DEBUG]
+            // let stdout = stdout + &args.join(" ");
+            Err(Error::CommandFaliedError {
+                status,
+                stdout,
+                stderr,
+            })
+        }
     }
 
     /// Create a new container
@@ -299,7 +339,7 @@ impl RuncClient {
         id: &str,
         bundle: impl AsRef<Path>,
         opts: Option<&CreateOpts>,
-    ) -> Result<RuncResponse, Error> {
+    ) -> Result<RuncResponse> {
         let mut args = vec![
             "create".to_string(),
             "--bundle".to_string(),
@@ -309,31 +349,39 @@ impl RuncClient {
             args.append(&mut opts.args()?);
         }
         args.push(id.to_string());
-        Ok(self.command(&args, true)?)
+        debug_log!("set command...");
+        let mut cmd = self.command(&args)?;
+        debug_log!("command is set");
+        match opts {
+            Some(CreateOpts { io: Some(_io), .. }) => _io.set(&mut cmd),
+            _ => {}
+        }
+        self.launch(cmd, true, true)
     }
 
     /// Delete a container
-    pub fn delete(&self, id: &str, opts: Option<&DeleteOpts>) -> Result<RuncResponse, Error> {
+    /// If you set drop_pipe, you can use the pipe you set when creating container.
+    pub fn delete(
+        &self,
+        id: &str,
+        opts: Option<&DeleteOpts>,
+        close_pipe: bool,
+    ) -> Result<RuncResponse> {
         let mut args = vec!["delete".to_string()];
         if let Some(opts) = opts {
             args.append(&mut opts.args());
         }
         args.push(id.to_string());
-        Ok(self.command(&args, true)?)
+        self.launch(self.command(&args)?, true, !close_pipe)
     }
 
     /// Return an event stream of container notifications
-    pub fn events(&self, id: &str, interval: &Duration) -> Result<(), Error> {
+    pub fn events(&self, id: &str, interval: &Duration) -> Result<()> {
         Err(Error::UnimplementedError("events".to_string()))
     }
 
     /// Execute an additional process inside the container
-    pub fn exec(
-        &self,
-        id: &str,
-        spec: &Process,
-        opts: Option<&ExecOpts>,
-    ) -> Result<(), Error> {
+    pub fn exec(&self, id: &str, spec: &Process, opts: Option<&ExecOpts>) -> Result<()> {
         let (mut temp_file, file_name): (NamedTempFile, String) =
             utils::make_temp_file_in_runtime_dir()?;
         {
@@ -348,67 +396,72 @@ impl RuncClient {
             args.append(&mut opts.args()?);
         }
         args.push(id.to_string());
-        self.command(&args, true)?;
+        let mut cmd = self.command(&args)?;
+        match opts {
+            Some(ExecOpts { io: Some(_io), .. }) => _io.set(&mut cmd),
+            _ => {}
+        }
+        let _ = self.launch(cmd, true, true)?;
         Ok(())
     }
 
     /// Send the specified signal to processes inside the container
-    pub fn kill(&self, id: &str, sig: u32, opts: Option<&KillOpts>) -> Result<(), Error> {
+    pub fn kill(&self, id: &str, sig: u32, opts: Option<&KillOpts>) -> Result<()> {
         let mut args = vec!["kill".to_string()];
         if let Some(opts) = opts {
             args.append(&mut opts.args());
         }
         args.push(id.to_string());
         args.push(sig.to_string());
-        let _ = self.command(&args, true)?;
+        let _ = self.launch(self.command(&args)?, true, true)?;
         Ok(())
     }
 
     /// List all containers associated with this runc instance
-    pub fn list(&self) -> Result<Vec<Container>, Error> {
-        let args = ["list".to_string(), "--format-json".to_string()];
-        let output = self.command(&args, false)?.output;
-        let output = output.trim();
-        // Ugly hack to work around golang
-        Ok(if output == "null" {
-            Vec::new()
-        } else {
-            serde_json::from_str(output).map_err(Error::JsonDeserializationError)?
-        })
-    }
+    // pub fn list(&self) -> Result<Vec<Container>> {
+    //     let args = ["list".to_string(), "--format-json".to_string()];
+    //     let output = self.command(&args, false)?.output;
+    //     let output = output.trim();
+    //     // Ugly hack to work around golang
+    //     Ok(if output == "null" {
+    //         Vec::new()
+    //     } else {
+    //         serde_json::from_str(output).map_err(Error::JsonDeserializationError)?
+    //     })
+    // }
 
     /// Pause a container
-    pub fn pause(&self, id: &str) -> Result<(), Error> {
+    pub fn pause(&self, id: &str) -> Result<()> {
         let args = ["pause".to_string(), id.to_string()];
-        self.command(&args, true)?;
+        let _ = self.launch(self.command(&args)?, true, true)?;
         Ok(())
     }
 
     /// List all the processes inside the container, returning their pids
-    pub fn ps(&self, id: &str) -> Result<Vec<usize>, Error> {
-        let args = [
-            "ps".to_string(),
-            "--format-json".to_string(),
-            id.to_string(),
-        ];
-        let output = self.command(&args, false)?.output;
-        let output = output.trim();
-        // Ugly hack to work around golang
-        Ok(if output == "null" {
-            Vec::new()
-        } else {
-            serde_json::from_str(output).map_err(Error::JsonDeserializationError)?
-        })
-    }
+    // pub fn ps(&self, id: &str) -> Result<Vec<usize>> {
+    //     let args = [
+    //         "ps".to_string(),
+    //         "--format-json".to_string(),
+    //         id.to_string(),
+    //     ];
+    //     let output = self.command(&args)?;
+    //     let output = output.trim();
+    //     // Ugly hack to work around golang
+    //     Ok(if output == "null" {
+    //         Vec::new()
+    //     } else {
+    //         serde_json::from_str(output).map_err(Error::JsonDeserializationError)?
+    //     })
+    // }
 
-    pub fn restore(&self) -> Result<(), Error> {
+    pub fn restore(&self) -> Result<()> {
         Err(Error::UnimplementedError("restore".to_string()))
     }
 
     /// Resume a container
-    pub fn resume(&self, id: &str) -> Result<(), Error> {
+    pub fn resume(&self, id: &str) -> Result<()> {
         let args = ["pause".to_string(), id.to_string()];
-        self.command(&args, true)?;
+        let _ = self.launch(self.command(&args)?, true, true)?;
         Ok(())
     }
 
@@ -418,45 +471,46 @@ impl RuncClient {
         id: &str,
         bundle: impl AsRef<Path>,
         opts: Option<&CreateOpts>,
-    ) -> Result<RuncResponse, Error> {
+    ) -> Result<RuncResponse> {
         let mut args = vec!["run".to_string(), "--bundle".to_string()];
         if let Some(opts) = opts {
             args.append(&mut opts.args()?);
         }
         args.push(utils::abs_string(bundle)?);
         args.push(id.to_string());
-        // ugly hack?: is it ok to stick to run 
-        Ok(self.command(&args, true)?)
+        // ugly hack?: is it ok to stick to run
+        self.launch(self.command(&args)?, true, true)
     }
 
     /// Start an already created container
-    pub fn start(&self, id: &str) -> Result<RuncResponse, Error> {
+    pub fn start(&self, id: &str) -> Result<RuncResponse> {
         let args = ["start".to_string(), id.to_string()];
-        Ok(self.command(&args, true)?)
+        debug_log!("start: launch..."); 
+        self.launch(self.command(&args)?, true, true)
     }
 
     /// Return the state of a container
-    pub fn state(&self, id: &str) -> Result<Vec<usize>, Error> {
+    pub fn state(&self, id: &str) -> Result<Container> {
         let args = ["state".to_string(), id.to_string()];
-        let output = self.command(&args, true)?.output;
-        Ok(serde_json::from_str(&output).map_err(Error::JsonDeserializationError)?)
+        let res = self.launch(self.command(&args)?, true, true)?;
+        Ok(serde_json::from_str(&res.output).map_err(Error::JsonDeserializationError)?)
     }
 
     /// Return the latest statistics for a container
-    pub fn stats(&self, id: &str) -> Result<Stats, Error> {
-        let args = ["events".to_string(), "--stats".to_string(), id.to_string()];
-        let output = self.command(&args, true)?.output;
-        let event: Event =
-            serde_json::from_str(&output).map_err(Error::JsonDeserializationError)?;
-        if let Some(stats) = event.stats {
-            Ok(stats)
-        } else {
-            Err(Error::MissingContainerStatsError)
-        }
-    }
+    // pub fn stats(&self, id: &str) -> Result<Stats> {
+    //     let args = ["events".to_string(), "--stats".to_string(), id.to_string()];
+    //     let output = self.command(&args, true)?.output;
+    //     let event: Event =
+    //         serde_json::from_str(&output).map_err(Error::JsonDeserializationError)?;
+    //     if let Some(stats) = event.stats {
+    //         Ok(stats)
+    //     } else {
+    //         Err(Error::MissingContainerStatsError)
+    //     }
+    // }
 
     /// Update a container with the provided resource spec
-    pub fn update(&self, id: &str, resources: &LinuxResources) -> Result<(), Error> {
+    pub fn update(&self, id: &str, resources: &LinuxResources) -> Result<()> {
         let (mut temp_file, file_name): (NamedTempFile, String) =
             utils::make_temp_file_in_runtime_dir()?;
         {
@@ -473,7 +527,7 @@ impl RuncClient {
             file_name,
             id.to_string(),
         ];
-        self.command(&args, true)?;
+        self.launch(self.command(&args)?, true, true)?;
         Ok(())
     }
 }
@@ -483,12 +537,12 @@ pub struct RuncAsyncClient(runc::Runc);
 
 impl RuncAsyncClient {
     /// Create a new runc client from the supplied configuration
-    pub fn from_config(config: RuncConfig) -> Result<Self, Error> {
+    pub fn from_config(config: RuncConfig) -> Result<Self> {
         config.build_async()
     }
 
     #[cfg(target_os = "linux")]
-    pub async fn command(&self, args: &[String], combined_output: bool) -> Result<String, Error> {
+    pub async fn command(&self, args: &[String], combined_output: bool) -> Result<String> {
         let args = [&self.0.args()?, args].concat();
         let proc = tokio::process::Command::new(&self.0.command)
             .args(args)
@@ -523,11 +577,11 @@ impl RuncAsyncClient {
     }
 
     #[cfg(not(target_os = "linux"))]
-    pub async fn command(&self, args: &[String]) -> Result<(), Error> {
+    pub async fn command(&self, args: &[String]) -> Result<()> {
         Err(Error::UnimplementedError("command".to_string()))
     }
 
-    pub async fn checkpoint(&self) -> Result<(), Error> {
+    pub async fn checkpoint(&self) -> Result<()> {
         Err(Error::UnimplementedError("checkpoint".to_string()))
     }
 
@@ -537,7 +591,7 @@ impl RuncAsyncClient {
         id: &str,
         bundle: impl AsRef<Path>,
         opts: Option<&CreateOpts>,
-    ) -> Result<(), Error> {
+    ) -> Result<()> {
         let mut args = vec![
             "create".to_string(),
             "--bundle".to_string(),
@@ -552,7 +606,7 @@ impl RuncAsyncClient {
     }
 
     /// Delete a container
-    pub async fn delete(&self, id: &str, opts: Option<&DeleteOpts>) -> Result<(), Error> {
+    pub async fn delete(&self, id: &str, opts: Option<&DeleteOpts>) -> Result<()> {
         let mut args = vec!["delete".to_string()];
         if let Some(opts) = opts {
             args.append(&mut opts.args());
@@ -563,17 +617,12 @@ impl RuncAsyncClient {
     }
 
     /// Return an event stream of container notifications
-    pub async fn events(&self, id: &str, interval: &Duration) -> Result<(), Error> {
+    pub async fn events(&self, id: &str, interval: &Duration) -> Result<()> {
         Err(Error::UnimplementedError("events".to_string()))
     }
 
     /// Execute an additional process inside the container
-    pub async fn exec(
-        &self,
-        id: &str,
-        spec: &Process,
-        opts: Option<&ExecOpts>,
-    ) -> Result<(), Error> {
+    pub async fn exec(&self, id: &str, spec: &Process, opts: Option<&ExecOpts>) -> Result<()> {
         let (mut temp_file, file_name): (NamedTempFile, String) =
             utils::make_temp_file_in_runtime_dir()?;
         {
@@ -593,7 +642,7 @@ impl RuncAsyncClient {
     }
 
     /// Send the specified signal to processes inside the container
-    pub async fn kill(&self, id: &str, sig: u32, opts: Option<&KillOpts>) -> Result<(), Error> {
+    pub async fn kill(&self, id: &str, sig: u32, opts: Option<&KillOpts>) -> Result<()> {
         let mut args = vec!["kill".to_string()];
         if let Some(opts) = opts {
             args.append(&mut opts.args());
@@ -605,7 +654,7 @@ impl RuncAsyncClient {
     }
 
     /// List all containers associated with this runc instance
-    pub async fn list(&self) -> Result<Vec<Container>, Error> {
+    pub async fn list(&self) -> Result<Vec<Container>> {
         let args = ["list".to_string(), "--format-json".to_string()];
         let output = self.command(&args, false).await?;
         let output = output.trim();
@@ -618,14 +667,14 @@ impl RuncAsyncClient {
     }
 
     /// Pause a container
-    pub async fn pause(&self, id: &str) -> Result<(), Error> {
+    pub async fn pause(&self, id: &str) -> Result<()> {
         let args = ["pause".to_string(), id.to_string()];
         self.command(&args, true).await?;
         Ok(())
     }
 
     /// List all the processes inside the container, returning their pids
-    pub async fn ps(&self, id: &str) -> Result<Vec<usize>, Error> {
+    pub async fn ps(&self, id: &str) -> Result<Vec<usize>> {
         let args = [
             "ps".to_string(),
             "--format-json".to_string(),
@@ -641,12 +690,12 @@ impl RuncAsyncClient {
         })
     }
 
-    pub async fn restore(&self) -> Result<(), Error> {
+    pub async fn restore(&self) -> Result<()> {
         Err(Error::UnimplementedError("restore".to_string()))
     }
 
     /// Resume a container
-    pub async fn resume(&self, id: &str) -> Result<(), Error> {
+    pub async fn resume(&self, id: &str) -> Result<()> {
         let args = ["pause".to_string(), id.to_string()];
         self.command(&args, true).await?;
         Ok(())
@@ -658,7 +707,7 @@ impl RuncAsyncClient {
         id: &str,
         bundle: impl AsRef<Path>,
         opts: Option<&CreateOpts>,
-    ) -> Result<(), Error> {
+    ) -> Result<()> {
         let mut args = vec!["run".to_string(), "--bundle".to_string()];
         if let Some(opts) = opts {
             args.append(&mut opts.args()?);
@@ -670,21 +719,21 @@ impl RuncAsyncClient {
     }
 
     /// Start an already created container
-    pub async fn start(&self, id: &str) -> Result<(), Error> {
+    pub async fn start(&self, id: &str) -> Result<()> {
         let args = ["start".to_string(), id.to_string()];
         self.command(&args, true).await?;
         Ok(())
     }
 
     /// Return the state of a container
-    pub async fn state(&self, id: &str) -> Result<Vec<usize>, Error> {
+    pub async fn state(&self, id: &str) -> Result<Vec<usize>> {
         let args = ["state".to_string(), id.to_string()];
         let output = self.command(&args, true).await?;
         Ok(serde_json::from_str(&output).map_err(Error::JsonDeserializationError)?)
     }
 
     /// Return the latest statistics for a container
-    pub async fn stats(&self, id: &str) -> Result<Stats, Error> {
+    pub async fn stats(&self, id: &str) -> Result<Stats> {
         let args = ["events".to_string(), "--stats".to_string(), id.to_string()];
         let output = self.command(&args, true).await?;
         let event: Event =
@@ -697,7 +746,7 @@ impl RuncAsyncClient {
     }
 
     /// Update a container with the provided resource spec
-    pub async fn update(&self, id: &str, resources: &LinuxResources) -> Result<(), Error> {
+    pub async fn update(&self, id: &str, resources: &LinuxResources) -> Result<()> {
         let (mut temp_file, file_name): (NamedTempFile, String) =
             utils::make_temp_file_in_runtime_dir()?;
         {
@@ -749,7 +798,7 @@ mod tests {
             .build_async()
             .expect("unable to create runc instance")
     }
-    
+
     fn fail_async_client() -> RuncAsyncClient {
         RuncConfig::new()
             .command(CMD_FALSE)
@@ -762,38 +811,17 @@ mod tests {
     }
 
     #[test]
-    fn test_command() {
-        let ok_runc = ok_client();
-        ok_runc.command(&[], true).expect("true failed.");
-        eprintln!("ok_runc succeeded.");
-        let fail_runc = fail_client();
-        match fail_runc.command(&[], true) {
-            Ok(_) => panic!("fail_runc returned exit status 0."),
-            Err(Error::CommandFaliedError{
-                status,
-                stdout,
-                stderr,
-            }) => {
-                if status.code().unwrap() == 1 && stdout.is_empty() && stderr.is_empty() {
-                    eprintln!("fail_runc succeeded.");
-                } else {
-                    panic!("unexpected outputs from fail_runc.")
-                }
-            }
-            Err(e) => panic!("unexpected error from fail_runc: {:?}", e)
-        }
-    }
-
-    #[test]
     fn test_create() {
         let opts = CreateOpts::new();
         let ok_runc = ok_client();
-        ok_runc.create("fake-id", "fake-bundle", Some(&opts)).expect("true failed.");
+        ok_runc
+            .create("fake-id", "fake-bundle", Some(&opts))
+            .expect("true failed.");
         eprintln!("ok_runc succeeded.");
         let fail_runc = fail_client();
         match fail_runc.create("fake-id", "fake-bundle", Some(&opts)) {
             Ok(_) => panic!("fail_runc returned exit status 0."),
-            Err(Error::CommandFaliedError{
+            Err(Error::CommandFaliedError {
                 status,
                 stdout,
                 stderr,
@@ -804,7 +832,7 @@ mod tests {
                     panic!("unexpected outputs from fail_runc.")
                 }
             }
-            Err(e) => panic!("unexpected error from fail_runc: {:?}", e)
+            Err(e) => panic!("unexpected error from fail_runc: {:?}", e),
         }
     }
 
@@ -812,12 +840,14 @@ mod tests {
     fn test_run() {
         let opts = CreateOpts::new();
         let ok_runc = ok_client();
-        ok_runc.run("fake-id", "fake-bundle", Some(&opts)).expect("true failed.");
+        ok_runc
+            .run("fake-id", "fake-bundle", Some(&opts))
+            .expect("true failed.");
         eprintln!("ok_runc succeeded.");
         let fail_runc = fail_client();
         match fail_runc.run("fake-id", "fake-bundle", Some(&opts)) {
             Ok(_) => panic!("fail_runc returned exit status 0."),
-            Err(Error::CommandFaliedError{
+            Err(Error::CommandFaliedError {
                 status,
                 stdout,
                 stderr,
@@ -828,7 +858,7 @@ mod tests {
                     panic!("unexpected outputs from fail_runc.")
                 }
             }
-            Err(e) => panic!("unexpected error from fail_runc: {:?}", e)
+            Err(e) => panic!("unexpected error from fail_runc: {:?}", e),
         }
     }
 
@@ -837,12 +867,14 @@ mod tests {
         let opts = ExecOpts::new();
         let ok_runc = ok_client();
         let proc = dummy_process();
-        ok_runc.exec("fake-id", &proc, Some(&opts)).expect("true failed.");
+        ok_runc
+            .exec("fake-id", &proc, Some(&opts))
+            .expect("true failed.");
         eprintln!("ok_runc succeeded.");
         let fail_runc = fail_client();
         match fail_runc.exec("fake-id", &proc, Some(&opts)) {
             Ok(_) => panic!("fail_runc returned exit status 0."),
-            Err(Error::CommandFaliedError{
+            Err(Error::CommandFaliedError {
                 status,
                 stdout,
                 stderr,
@@ -853,7 +885,7 @@ mod tests {
                     panic!("unexpected outputs from fail_runc.")
                 }
             }
-            Err(e) => panic!("unexpected error from fail_runc: {:?}", e)
+            Err(e) => panic!("unexpected error from fail_runc: {:?}", e),
         }
     }
 
@@ -862,12 +894,14 @@ mod tests {
         let opts = DeleteOpts::new();
         let ok_runc = ok_client();
         let proc = dummy_process();
-        ok_runc.delete("fake-id", Some(&opts)).expect("true failed.");
+        ok_runc
+            .delete("fake-id", Some(&opts), true)
+            .expect("true failed.");
         eprintln!("ok_runc succeeded.");
         let fail_runc = fail_client();
-        match fail_runc.delete("fake-id", Some(&opts)) {
+        match fail_runc.delete("fake-id", Some(&opts), true) {
             Ok(_) => panic!("fail_runc returned exit status 0."),
-            Err(Error::CommandFaliedError{
+            Err(Error::CommandFaliedError {
                 status,
                 stdout,
                 stderr,
@@ -878,7 +912,7 @@ mod tests {
                     panic!("unexpected outputs from fail_runc.")
                 }
             }
-            Err(e) => panic!("unexpected error from fail_runc: {:?}", e)
+            Err(e) => panic!("unexpected error from fail_runc: {:?}", e),
         }
     }
 
@@ -905,7 +939,7 @@ mod tests {
                         panic!("unexpected outputs from fail_runc.")
                     }
                 }
-                Err(e) => panic!("unexpected error from fail_runc: {:?}", e)
+                Err(e) => panic!("unexpected error from fail_runc: {:?}", e),
             }
         })
         .await
@@ -949,7 +983,7 @@ mod tests {
                         panic!("unexpected outputs from fail_runc.")
                     }
                 }
-                Err(e) => panic!("unexpected error from fail_runc: {:?}", e)
+                Err(e) => panic!("unexpected error from fail_runc: {:?}", e),
             }
         })
         .await
@@ -993,7 +1027,7 @@ mod tests {
                         panic!("unexpected outputs from fail_runc.")
                     }
                 }
-                Err(e) => panic!("unexpected error from fail_runc: {:?}", e)
+                Err(e) => panic!("unexpected error from fail_runc: {:?}", e),
             }
         })
         .await
@@ -1036,7 +1070,7 @@ mod tests {
                         panic!("unexpected outputs from fail_runc.")
                     }
                 }
-                Err(e) => panic!("unexpected error from fail_runc: {:?}", e)
+                Err(e) => panic!("unexpected error from fail_runc: {:?}", e),
             }
         })
         .await
@@ -1077,14 +1111,12 @@ mod tests {
                         panic!("unexpected outputs from fail_runc.")
                     }
                 }
-                Err(e) => panic!("unexpected error from fail_runc: {:?}", e)
+                Err(e) => panic!("unexpected error from fail_runc: {:?}", e),
             }
         })
         .await
         .expect("tokio spawn falied.");
     }
-
-
 
     // Clean up: this Drop tries to remove runc binary and associated directory, then only for tests.
     impl Drop for runc::Runc {

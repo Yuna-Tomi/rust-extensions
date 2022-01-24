@@ -25,8 +25,9 @@ use super::traits::{
 };
 use super::config::{
     CreateConfig,
-    ExecConfig, StdioConfig,
+    ExecConfig,
 };
+use super::io::{StdioConfig, ProcessIO};
 use super::state::{
     ProcessState,
 };
@@ -71,6 +72,7 @@ pub struct InitProcess {
     // FIXME: suspended for difficulties
     // console: ???,
     // platform: ???,
+    io: Option<ProcessIO>,
     runtime: RuncClient,
 
     /// The pausing state
@@ -125,6 +127,8 @@ impl InitProcess {
             terminal: config.terminal,
         };
 
+        debug_log!("InitProcess stdio: {:?}", stdio);
+
         Ok(Self {
             mu: Arc::default(),
             state: ProcessState::Unknown,
@@ -136,6 +140,7 @@ impl InitProcess {
                 .unwrap(),
             id: config.id,
             bundle: config.bundle,
+            io: None,
             runtime,
             stdio,
             pausing: false,
@@ -156,12 +161,20 @@ impl InitProcess {
         if config.terminal {
             // FIXME: using console is suspended for difficulties
         } else {
-            // FIXME: have to prepare IO
+            // note that io contains nothing until this time, then we can insert new ProcessIO certainly.
+            debug_log!("prepare IO...");
+            let _ = self.io.get_or_insert(
+                ProcessIO::new(&self.id, self.io_uid, self.io_gid, self.stdio.clone())?
+            );
+            debug_log!("IO prepared!");
         }
 
-        let opts = runc::options::CreateOpts::new()
+        let mut opts = runc::options::CreateOpts::new()
             .pid_file(&pid_file)
             .no_pivot(self.no_pivot_root);
+        if let Some(proc_io) = &self.io {
+            opts = opts.io(proc_io.io().unwrap());
+        }
 
         // FIXME: apply appropriate error
         debug_log!("call RuncClient::create:");
@@ -169,7 +182,7 @@ impl InitProcess {
         debug_log!("    opts={:?}", opts);
         let (tx, rx) = oneshot::channel::<()>();
         self.wait_block = Some(rx);
-        let res = self
+        let _ = self
             .runtime
             .create(config.id.as_str(), &config.bundle, Some(&opts))
             .map_err(|e| {
@@ -181,6 +194,7 @@ impl InitProcess {
 
         if config.stdin != "" {
             // FIXME: have to open stdin
+            debug_log!("fixme: have to open stdin");
         }
 
         let mut pid_f = OpenOptions::new().read(true).open(&pid_file)?;
@@ -212,14 +226,13 @@ impl ContainerProcess for InitProcess {}
 
 impl InitState for InitProcess {
     fn start(&mut self) -> io::Result<()> {
-        let _m = self.mu.lock().unwrap();
-        let (tx, rx) = oneshot::channel::<()>();
+        // let _m = self.mu.lock().unwrap();
         // wait for wait() on creation process
         // while let Some(_) = self.wait_block {} // this produce deadlock because of Mutex of containers at Service
         // self.wait_block = Some(rx);
-        debug_log!("RuncClient::create succeeded");
         // tx.send(()).unwrap(); // notify successfully started.
         
+        debug_log!("call RuncClient::start");
         let res = self.runtime.start(&self.id).map_err(|e| {
             log::error!("{}", e);
             io::ErrorKind::Other
@@ -231,7 +244,7 @@ impl InitState for InitProcess {
 
     fn delete(&mut self) -> io::Result<()> {
         let _m = self.mu.lock().unwrap();
-        self.runtime.delete(&self.id, None).map_err(|e| {
+        self.runtime.delete(&self.id, None, true).map_err(|e| {
             log::error!("{}", e);
             io::ErrorKind::Other
         })?;

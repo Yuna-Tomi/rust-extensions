@@ -3,8 +3,8 @@ use chrono::{DateTime, Utc};
 use super::state::ProcessState;
 use super::config::{
     ExecConfig,
-    StdioConfig,
 };
+use super::io::StdioConfig;
 pub trait InitState {
     fn start(&mut self) -> io::Result<()>;
     fn delete(&mut self) -> io::Result<()>;
