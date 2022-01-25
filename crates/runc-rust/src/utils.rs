@@ -77,19 +77,6 @@ pub fn make_temp_file_in_runtime_dir() -> Result<(NamedTempFile, String), Error>
     Ok((temp_file, file_name))
 }
 
-pub fn filter_env(input: &[String], names: &[String]) -> Vec<String> {
-    let mut envs: Vec<String> = vec![];
-    'loop0: for v in input {
-        for k in names {
-            if v.starts_with(k.as_str()) {
-                continue 'loop0;
-            }
-        }
-        envs.push(v.clone());
-    }
-    envs
-}
-
 pub fn binary_path(path: impl AsRef<Path>) -> Option<PathBuf> {
     env::var_os("PATH").and_then(|paths| {
         env::split_paths(&paths).find_map(|dir| {

@@ -36,7 +36,6 @@ use crate::error::Error;
 use crate::io::RuncIO;
 use crate::utils::{self, ALL, CONSOLE_SOCKET, DETACH, FORCE, NO_NEW_KEYRING, NO_PIVOT, PID_FILE};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 pub trait Args {
     type Output;

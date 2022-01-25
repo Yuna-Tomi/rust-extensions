@@ -14,30 +14,27 @@
    limitations under the License.
 */
 
+use chrono::{DateTime, Utc};
 use nix::errno::Errno;
 use nix::sys::stat;
 use nix::unistd;
-use protobuf::reflect::ProtobufValue;
-use serde_json;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use sys_mount::{MountFlags, SupportedFilesystems, UnmountFlags};
+use sys_mount::UnmountFlags;
 
 use crate::options::oci::Options;
-use crate::process::init;
 use crate::process::{
     config::{CreateConfig, MountConfig},
-    init::{InitProcess},
+    init::InitProcess,
 };
 
-use crate::utils::{self, new_runc};
+use crate::utils;
 pub use containerd_shim_protos as protos;
-use log::warn;
-use protobuf::{Message, RepeatedField};
+use protobuf::Message;
 use protos::shim::{
     empty::Empty,
     shim::{
@@ -47,7 +44,7 @@ use protos::shim::{
 };
 
 // for debug
-use crate::{debug::LOG, debug_log};
+use crate::dbg::*;
 
 const OPTIONS_FILENAME: &str = "options.json";
 
@@ -120,6 +117,7 @@ impl Container {
             }
         }
 
+        debug_log!("write_runtime: {}", opts.binary_name);
         // For historical reason, we write binary name as well as the entire opts
         write_runtime(&req.bundle, &opts.binary_name)?;
 
@@ -274,13 +272,24 @@ impl Container {
         Ok(p.pid())
     }
 
-    pub fn delete(&mut self, req: &DeleteRequest) -> io::Result<Option<InitProcess>> {
-        let p = self.process_mut(&req.exec_id)?;
-        p.delete()?;
+    pub fn delete(
+        &mut self,
+        req: &DeleteRequest,
+    ) -> io::Result<(isize, isize, Option<DateTime<Utc>>)> {
+        {
+            let p = self.process_mut(&req.exec_id)?;
+            debug_log!("call InitProcess::delete(): {:?}", p);
+            p.delete()?;
+            debug_log!("InitProcess::delete() succeeded: {:?}", p);
+        }
         if req.exec_id != "" {
-            Ok(self.process_remove(&req.exec_id))
+            let p = self
+                .process_remove(&req.exec_id)
+                .ok_or(std::io::ErrorKind::NotFound)?;
+            Ok((p.pid(), p.exit_status(), p.exited_at()))
         } else {
-            Ok(None)
+            let ref p = self.process_self;
+            Ok((p.pid(), p.exit_status(), p.exited_at()))
         }
     }
 
@@ -353,7 +362,7 @@ impl Container {
 
 /// reads the option information from the path.
 /// When the file does not exist, returns [`None`] without an error.
-fn read_options<P>(path: P) -> io::Result<Option<Options>>
+pub fn read_options<P>(path: P) -> io::Result<Option<Options>>
 where
     P: AsRef<Path>,
 {
@@ -369,7 +378,7 @@ where
     Ok(Some(msg))
 }
 
-fn write_options<P>(path: P, opts: &Options) -> io::Result<()>
+pub fn write_options<P>(path: P, opts: &Options) -> io::Result<()>
 where
     P: AsRef<Path>,
 {
@@ -387,21 +396,27 @@ where
     Ok(())
 }
 
-fn read_runtime<P>(path: P) -> Result<Option<Options>, Box<dyn std::error::Error>>
+pub fn read_runtime<P>(path: P) -> Result<String, Box<dyn std::error::Error>>
 where
     P: AsRef<Path>,
 {
-    Err(Box::new(ttrpc::Error::Others(
-        "not implemented yet".to_string(),
-    )))
+    let file_path = path.as_ref().join("runtime");
+    let f = fs::OpenOptions::new().read(true).open(&file_path)?;
+    let mut reader = BufReader::new(f);
+    let mut buf = String::new();
+    let mut res = String::new();
+    while reader.read_line(&mut buf)? > 0 {
+        res.push_str(&buf);
+    }
+    Ok(res)
 }
 
-fn write_runtime<P, R>(path: P, runtime: R) -> io::Result<()>
+pub fn write_runtime<P, R>(path: P, runtime: R) -> io::Result<()>
 where
     P: AsRef<Path>,
     R: AsRef<str>,
 {
-    debug_log!("write runtime.");
+    debug_log!("write runtime: {:?}", runtime.as_ref());
     let file_path = path.as_ref().join("runtime");
     let f = fs::OpenOptions::new()
         .create(true)
@@ -412,10 +427,4 @@ where
     writer.write_all(runtime.as_ref().as_bytes())?;
     debug_log!("write runtime succeeded: {:?}", file_path.as_os_str());
     Ok(())
-}
-
-fn new_container() -> Result<Container, Box<dyn std::error::Error>> {
-    Err(Box::new(ttrpc::Error::Others(
-        "not implemented yet".to_string(),
-    )))
 }

@@ -14,19 +14,19 @@
    limitations under the License.
 */
 
-use crate::container::Container;
+use crate::container::{self, Container};
+use crate::options::oci::Options;
 use crate::process::state::ProcessState;
+use crate::utils;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
-use std::thread::sleep;
-use std::time::Duration;
+use std::env;
+use std::sync::RwLock;
 
 use containerd_runc_rust as runc;
 use containerd_shim as shim;
 use containerd_shim_protos as protos;
 
 use log::info;
-use nix::pty::PtyMaster;
 use once_cell::sync::Lazy;
 use protobuf::well_known_types::Timestamp;
 use protobuf::{RepeatedField, SingularPtrField};
@@ -42,10 +42,9 @@ use protos::shim::{
 use runc::console::ReceivePtyMaster;
 use runc::error::Error as RuncError;
 use runc::options::*;
-use runc::{RuncClient, RuncConfig};
 use shim::{api, ExitSignal, TtrpcContext, TtrpcResult};
+use sys_mount::UnmountFlags;
 use ttrpc::{Code, Status};
-use uuid::Uuid;
 
 use crate::dbg::*;
 
@@ -76,7 +75,11 @@ macro_rules! debug_status {
 
 #[derive(Clone)]
 pub struct Service {
+    /// Runtime id
     runtime_id: String,
+    /// Container id
+    id: String,
+    namespace: String,
     exit: ExitSignal,
 }
 
@@ -97,9 +100,16 @@ impl shim::Shim for Service {
         _config: &mut shim::Config,
     ) -> Self {
         let runtime_id = _runtime_id.to_string();
+        let id = _id.to_string();
+        let namespace = _namespace.to_string();
         let exit = ExitSignal::default();
         debug_log!("shim service successfully created.");
-        Self { runtime_id, exit }
+        Self {
+            runtime_id,
+            id,
+            namespace,
+            exit,
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -123,6 +133,44 @@ impl shim::Shim for Service {
 
     fn get_task_service(&self) -> Self::T {
         self.clone()
+    }
+
+    fn delete_shim(&mut self) -> Result<DeleteResponse, Self::Error> {
+        debug_log!("call delete_shim");
+        let cwd = env::current_dir()?;
+        debug_log!("current dir: {:?}", cwd);
+        let parent = cwd.parent().expect("shim running on root directory.");
+        let path = parent.join(&self.id);
+        // let runtime = container::read_runtime(&path).map_err(|e| Self::Error::Delete(e.to_string()))?;
+        // debug_log!("delete_shim: runtime={}", runtime);
+        let opts =
+            container::read_options(&path).map_err(|e| Self::Error::Delete(e.to_string()))?;
+        let root = match opts {
+            Some(Options { root, .. }) if root != "" => root,
+            _ => RUN_DIR.to_string(),
+        };
+        let runc = utils::new_runc(&root, &path, self.namespace.clone(), "", false)
+            .map_err(|e| Self::Error::Delete(e.to_string()))?;
+        let opts = DeleteOpts::new().force(true);
+        runc.delete(&self.id, Some(&opts))
+            .map_err(|e| Self::Error::Delete(e.to_string()))?;
+        sys_mount::unmount(&path.as_path().join("rootfs"), UnmountFlags::empty()).map_err(|e| {
+            log::error!("failed to cleanup rootfs mount");
+            Self::Error::Delete(e.to_string())
+        })?;
+
+        let now = Some(Timestamp {
+            // FIXME: for debug
+            ..Default::default()
+        });
+        let exited_at = SingularPtrField::from_option(now);
+
+        debug_log!("successfully deleted shim.");
+        Ok(DeleteResponse {
+            exited_at,
+            exit_status: 137, // SIGKILL + 128
+            ..Default::default()
+        })
     }
 }
 
@@ -409,10 +457,10 @@ impl shim::Task for Service {
         })?;
 
         match container.delete(&_req) {
-            Ok(Some(p)) => {
+            Ok((pid, exit_status, exited_at)) => {
                 debug_log!("TTRPC call succeeded: delete");
                 // Might be ugly hack
-                let exited_at = match p.exited_at() {
+                let exited_at = match exited_at {
                     Some(t) => Some(Timestamp {
                         // nanos: t.timestamp_nanos() as i32, // ugly hack
                         ..Default::default() // all default, just for debug.
@@ -421,8 +469,8 @@ impl shim::Task for Service {
                 };
 
                 Ok(DeleteResponse {
-                    pid: p.pid() as u32,
-                    exit_status: p.exit_status() as u32,
+                    pid: pid as u32,
+                    exit_status: exit_status as u32,
                     exited_at: SingularPtrField::from_option(exited_at),
                     unknown_fields: _req.unknown_fields,
                     cached_size: _req.cached_size,
@@ -430,7 +478,7 @@ impl shim::Task for Service {
             }
             _ => Err(ttrpc::Error::RpcStatus(Status {
                 code: Code::NOT_FOUND,
-                message: "couldn't kill the process.".to_string(),
+                message: "failed to delete container.".to_string(),
                 details: RepeatedField::new(),
                 unknown_fields: _req.unknown_fields,
                 cached_size: _req.cached_size,
@@ -456,7 +504,6 @@ impl shim::Task for Service {
         Ok(Empty::default())
     }
 }
-
 
 fn err_mapping(e: RuncError) -> (Code, String) {
     (

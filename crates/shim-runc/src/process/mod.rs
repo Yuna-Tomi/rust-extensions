@@ -15,9 +15,10 @@
 */
 
 pub mod config;
-pub mod init;
 pub mod exec;
-pub mod state;
+pub mod fifo;
+pub mod init;
 pub mod io;
-mod utils;
+pub mod state;
 mod traits;
+mod utils;

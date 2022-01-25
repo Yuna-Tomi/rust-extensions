@@ -62,11 +62,11 @@ where
     T: AsRef<Path>,
 {
     // FIXME: appropriate filesystem from mnt.mount_type
-    let fs = SupportedFilesystems::new()?;
+    let _fs = SupportedFilesystems::new()?;
     // FIXME: here is ugly hack because it doesn't resolve the common lower directory
     // see https://github.com/containerd/containerd/blob/main/mount/mount_linux.go#L259
     // if mnt.mount_type = "overlay" && size >= PAGESIZE - 512 { chdir =.. }
-    let chdir = "";
+    let _chdir = "";
 
     // also, appropriate flag should be set
     let (flags, data, loop_setup) = parse_mount_options(&mnt.options);
@@ -173,7 +173,7 @@ pub fn new_runc<R, P>(
     root: R,
     path: P,
     namespace: String,
-    runtime: String,
+    runtime: &str,
     systemd_cgroup: bool,
 ) -> Result<RuncClient, Error>
 where
@@ -187,11 +187,7 @@ where
     })
     .join(namespace);
     let log = path.as_ref().join("log.json");
-    let runtime = if runtime == "" {
-        RUNC_NAME
-    } else {
-        runtime.as_ref()
-    };
+    let runtime = if runtime == "" { RUNC_NAME } else { runtime };
 
     let config = RuncConfig::new()
         .command(runtime)

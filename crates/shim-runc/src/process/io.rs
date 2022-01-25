@@ -13,14 +13,24 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 */
+use super::fifo::{self, Fifo};
 use containerd_runc_rust as runc;
-use runc::io::{
-    RuncIO, RuncPipedIO, IOOption,
-};
-use url::{Url, ParseError};
-use std::{sync::{Arc, RwLock}, process::Command, os::unix::{fs::DirBuilderExt, prelude::RawFd}, fs::{OpenOptions, File}, ffi::OsStr};
+use futures::executor;
+use nix::fcntl::OFlag;
+use runc::io::{IOOption, RuncIO, RuncPipedIO};
+use std::os::unix::prelude::FromRawFd;
 use std::path::Path;
-use std::fs::DirBuilder;
+use std::pin::Pin;
+use std::{
+    ffi::OsStr,
+    fs::{File, OpenOptions},
+    os::unix::{fs::DirBuilderExt, prelude::RawFd},
+    process::Command,
+    sync::{Arc, RwLock},
+};
+use std::{fs::DirBuilder, os::unix::prelude::AsRawFd};
+use tokio::io::{AsyncRead, AsyncWrite, BufReader, BufWriter};
+use url::{ParseError, Url};
 
 use crate::dbg::*;
 
@@ -33,7 +43,7 @@ pub struct StdioConfig {
 }
 
 impl StdioConfig {
-    pub fn is_null(&self) -> bool  {
+    pub fn is_null(&self) -> bool {
         self.stdin == "" && self.stdout == "" && self.stderr == ""
     }
 }
@@ -48,10 +58,17 @@ pub struct ProcessIO {
 }
 
 impl ProcessIO {
-    pub fn new(id: &str, io_uid: isize, io_gid: isize, stdio: StdioConfig)  -> std::io::Result<Self> {
+    pub fn new(
+        id: &str,
+        io_uid: isize,
+        io_gid: isize,
+        stdio: StdioConfig,
+    ) -> std::io::Result<Self> {
         if stdio.is_null() {
             return Ok(Self {
-                copy: false, stdio, ..Default::default()
+                copy: false,
+                stdio,
+                ..Default::default()
             });
         }
 
@@ -69,8 +86,10 @@ impl ProcessIO {
         match u.scheme() {
             "fifo" => {
                 let io = Box::new(RuncPipedIO::new(
-                        io_uid, io_gid, conditional_io_options(&stdio)
-                    )?);
+                    io_uid,
+                    io_gid,
+                    conditional_io_options(&stdio),
+                )?);
                 Ok(Self {
                     io: Some(io as Box<dyn RuncIO>),
                     uri: Some(u),
@@ -102,7 +121,9 @@ impl ProcessIO {
                 stdio.stdout = path.to_string_lossy().parse::<String>().unwrap();
                 stdio.stderr = path.to_string_lossy().parse::<String>().unwrap();
                 let io = Box::new(RuncPipedIO::new(
-                    io_uid, io_gid, conditional_io_options(&stdio)
+                    io_uid,
+                    io_gid,
+                    conditional_io_options(&stdio),
                 )?);
                 Ok(Self {
                     io: Some(io as Box<dyn RuncIO>),
@@ -111,7 +132,7 @@ impl ProcessIO {
                     stdio,
                 })
             }
-            _ => Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+            _ => Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
         }
     }
 }
@@ -129,6 +150,15 @@ impl ProcessIO {
         } else {
             None
         }
+    }
+
+    // FIXME: approriate pipe copy
+    pub fn copy_pipes(&self) -> std::io::Result<()> {
+        if !self.copy {
+            return Ok(());
+        }
+        executor::block_on(async { copy_pipes(self.io().unwrap(), &self.stdio).await })?;
+        Ok(())
     }
 }
 
@@ -159,17 +189,14 @@ impl RuncIO for BinaryIO {
     fn set(&self, cmd: &mut Command) {
         panic!("unimplemented")
     }
-
 }
 
 impl BinaryIO {
     pub fn new(path: impl AsRef<OsStr>) -> std::io::Result<Self> {
-        Ok(
-            Self {
-                cmd: Some(Arc::new(Command::new(path))),
-                out: Pipe::new()?,
-            }
-        )
+        Ok(Self {
+            cmd: Some(Arc::new(Command::new(path))),
+            out: Pipe::new()?,
+        })
     }
 }
 
@@ -192,4 +219,85 @@ fn conditional_io_options(stdio: &StdioConfig) -> IOOption {
         open_stdout: stdio.stdout != "",
         open_stderr: stdio.stderr != "",
     }
+}
+
+const FIFO_ERR_MSG: [&str; 2] = ["error copying stdout", "error copying stderr"];
+
+async fn copy_pipes(io: Box<dyn RuncIO>, stdio: &StdioConfig) -> std::io::Result<()> {
+    let io_files = vec![io.stdout(), io.stderr()];
+    let out_err = vec![&stdio.stdout, &stdio.stderr];
+    let mut same_file = None;
+    for (ix, (io_file, path)) in io_files.into_iter().zip(out_err.into_iter()).enumerate() {
+        // Note that each io_file (stdout/stderr) have to std::mem::forget, in order not to close pipe.
+        // Also, third argument corresponds to "not forget writer" for twice use of Fifo, in case of stdout==stderr.
+        let dest = |mut writer: Pin<Box<dyn AsyncWrite + Unpin + Send>>,
+                    r: Option<Fifo>,
+                    drop_w: bool| async move {
+            match io_file {
+                Some(f) => {
+                    debug_log!("{} readfile: {:?}", ix, f);
+                    debug_log!("{} fifo: {:?}", ix, f);
+                    let f = tokio::fs::File::from(f);
+                    let mut reader = BufReader::new(f);
+                    let _ = tokio::io::copy(&mut reader, &mut *writer).await?;
+                    std::mem::forget(reader);
+                    drop(r);
+                    if !drop_w {
+                        std::mem::forget(writer);
+                    }
+                    Ok(())
+                }
+                None => {
+                    log::error!("{}", FIFO_ERR_MSG[ix]);
+                    Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+                }
+            }
+        };
+        // might be ugly hack
+        if fifo::is_fifo(path)? {
+            let w_fifo = Fifo::open(path, OFlag::O_WRONLY, 0).await?;
+            let r_fifo = Fifo::open(path, OFlag::O_RDONLY, 0).await?;
+            let w = Box::pin(w_fifo);
+            let r = Some(r_fifo);
+            tokio::task::spawn(dest(w, r, true)).await??;
+        } else if let Some(w) = same_file.take() {
+            tokio::task::spawn(dest(w, None, true)).await??;
+            continue;
+        } else {
+            let f = tokio::fs::OpenOptions::new()
+                .write(true)
+                .append(true)
+                .open(&path)
+                .await?;
+            let w = Box::pin(f);
+            let drop_w = if stdio.stdout == stdio.stderr {
+                // might be ugly hack
+                let f = unsafe { tokio::fs::File::from_raw_fd(w.as_raw_fd()) };
+                let _ = same_file.get_or_insert(Box::pin(f));
+                false
+            } else {
+                true
+            };
+            tokio::task::spawn(dest(w, None, drop_w)).await??;
+        }
+    }
+    if stdio.stdin == "" {
+        return Ok(());
+    }
+    let f = Fifo::open(&stdio.stdin, OFlag::O_RDONLY | OFlag::O_NONBLOCK, 0).await?;
+    let copy_buf = async move {
+        let stdin = tokio::fs::File::from(io.stdin().unwrap());
+        let mut writer = BufWriter::new(stdin);
+        let mut reader = BufReader::new(f);
+        match tokio::io::copy(&mut reader, &mut writer).await {
+            Ok(x) => Ok(()),
+            Err(e) => {
+                log::error!("{}", e);
+                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+            }
+        }
+        // don't have to forget these reader/writer
+    };
+    tokio::task::spawn(copy_buf).await??;
+    Ok(())
 }

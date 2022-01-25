@@ -41,13 +41,11 @@ use crate::options::*;
 use crate::specs::{LinuxResources, Process};
 
 use crate::utils::{
-    DEBUG, DEFAULT_COMMAND, JSON, LOG, LOG_FORMAT, ROOT, ROOTLESS, SYSTEMD_CGROUP, TEXT,
+    JSON, TEXT,
 };
-use log::warn;
 use std::fmt::{self, Display};
-use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::Duration;
 use tempfile::NamedTempFile;
@@ -274,6 +272,10 @@ impl RuncClient {
     pub fn command(&self, args: &[String]) -> Result<Command> {
         let args = [&self.0.args()?, args].concat();
         let mut cmd = Command::new(&self.0.command);
+        cmd
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
         cmd.args(&args).env_remove("NOTIFY_SOCKET"); // NOTIFY_SOCKET introduces a special behavior in runc but should only be set if invoked from systemd
         Ok(cmd)
     }
@@ -365,19 +367,14 @@ impl RuncClient {
         &self,
         id: &str,
         opts: Option<&DeleteOpts>,
-        close_pipe: bool,
-    ) -> Result<RuncResponse> {
+    ) -> Result<()> {
         let mut args = vec!["delete".to_string()];
         if let Some(opts) = opts {
             args.append(&mut opts.args());
         }
         args.push(id.to_string());
-        self.launch(self.command(&args)?, true, !close_pipe)
-    }
-
-    /// Return an event stream of container notifications
-    pub fn events(&self, id: &str, interval: &Duration) -> Result<()> {
-        Err(Error::UnimplementedError("events".to_string()))
+        self.launch(self.command(&args)?, true, false)?;
+        Ok(())
     }
 
     /// Execute an additional process inside the container
@@ -617,7 +614,7 @@ impl RuncAsyncClient {
     }
 
     /// Return an event stream of container notifications
-    pub async fn events(&self, id: &str, interval: &Duration) -> Result<()> {
+    pub async fn events(&self, _id: &str, _interval: &Duration) -> Result<()> {
         Err(Error::UnimplementedError("events".to_string()))
     }
 
@@ -893,13 +890,12 @@ mod tests {
     fn test_delete() {
         let opts = DeleteOpts::new();
         let ok_runc = ok_client();
-        let proc = dummy_process();
         ok_runc
-            .delete("fake-id", Some(&opts), true)
+            .delete("fake-id", Some(&opts))
             .expect("true failed.");
         eprintln!("ok_runc succeeded.");
         let fail_runc = fail_client();
-        match fail_runc.delete("fake-id", Some(&opts), true) {
+        match fail_runc.delete("fake-id", Some(&opts)) {
             Ok(_) => panic!("fail_runc returned exit status 0."),
             Err(Error::CommandFaliedError {
                 status,

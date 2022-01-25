@@ -18,42 +18,28 @@
 // https://github.com/containerd/containerd/blob/main/pkg/process/init.go
 // https://github.com/containerd/containerd/blob/main/pkg/process/init_state.go
 
+use super::config::{CreateConfig, ExecConfig};
+use super::fifo::Fifo;
+use super::io::{ProcessIO, StdioConfig};
+use super::state::ProcessState;
+use super::traits::{ContainerProcess, InitState, Process};
 use crate::options::oci::Options;
 use crate::utils;
-use super::traits::{
-    ContainerProcess, InitState, Process, 
-};
-use super::config::{
-    CreateConfig,
-    ExecConfig,
-};
-use super::io::{StdioConfig, ProcessIO};
-use super::state::{
-    ProcessState,
-};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use containerd_runc_rust as runc;
-use containerd_shim_protos as protos;
-use nix::{
-    sys::wait::{self, WaitPidFlag, WaitStatus},
-    unistd::Pid,
-};
-
 use futures::{
     channel::oneshot::{self, Receiver},
     executor,
 };
-use runc::options::{DeleteOpts, KillOpts};
+use runc::options::KillOpts;
 use runc::RuncClient;
 use std::fs::OpenOptions;
 use std::io::{self, Read};
 use std::path::Path;
-use std::sync::RwLock;
-use std::sync::{atomic::AtomicBool, Arc, Mutex};
-use std::thread;
+use std::sync::{Arc, Mutex};
+use nix::fcntl::OFlag;
 
 use crate::dbg::*;
-
 
 // Might be ugly hack: in Rust, it is not good idea to hold Mutex inside InitProcess because it disables to clone.
 /// Init process for a container
@@ -82,7 +68,8 @@ pub struct InitProcess {
     pid: isize,
     // FIXME: suspended for difficulties
     // closers: Vec<???>,
-    // stdin: ???,
+    // might be ugly hack
+    stdin: Option<Fifo>, 
     pub stdio: StdioConfig,
 
     pub rootfs: String,
@@ -116,7 +103,7 @@ impl InitProcess {
             opts.root,
             path,
             namespace,
-            opts.binary_name,
+            &opts.binary_name,
             opts.systemd_cgroup,
         )
         .map_err(|_| io::Error::from(io::ErrorKind::NotFound))?;
@@ -142,6 +129,7 @@ impl InitProcess {
             bundle: config.bundle,
             io: None,
             runtime,
+            stdin: None,
             stdio,
             pausing: false,
             status: 0,
@@ -158,30 +146,30 @@ impl InitProcess {
     /// Create the process with the provided config
     pub fn create(&mut self, config: CreateConfig) -> io::Result<()> {
         let pid_file = Path::new(&self.bundle).join("init.pid");
+        let mut opts = runc::options::CreateOpts::new()
+            .pid_file(&pid_file)
+            .no_pivot(self.no_pivot_root);
         if config.terminal {
+            panic!("unimplemented");
             // FIXME: using console is suspended for difficulties
         } else {
             // note that io contains nothing until this time, then we can insert new ProcessIO certainly.
             debug_log!("prepare IO...");
-            let _ = self.io.get_or_insert(
-                ProcessIO::new(&self.id, self.io_uid, self.io_gid, self.stdio.clone())?
-            );
+            let proc_io = ProcessIO::new(&self.id, self.io_uid, self.io_gid, self.stdio.clone())?;
             debug_log!("IO prepared!");
-        }
-
-        let mut opts = runc::options::CreateOpts::new()
-            .pid_file(&pid_file)
-            .no_pivot(self.no_pivot_root);
-        if let Some(proc_io) = &self.io {
             opts = opts.io(proc_io.io().unwrap());
+            let _ = self.io.get_or_insert(proc_io);
+            // FIXME: apply appropriate error
+            debug_log!("call RuncClient::create:");
+            debug_log!("    id={}, bundle={}", config.id, config.bundle);
+            debug_log!("    opts={:?}", opts);
+            let (tx, rx) = oneshot::channel::<()>();
+            self.wait_block = Some(rx);
+
+            debug_log!("RuncClient::create succeeded");
+            tx.send(()).unwrap(); // notify successfully created.
         }
 
-        // FIXME: apply appropriate error
-        debug_log!("call RuncClient::create:");
-        debug_log!("    id={}, bundle={}", config.id, config.bundle);
-        debug_log!("    opts={:?}", opts);
-        let (tx, rx) = oneshot::channel::<()>();
-        self.wait_block = Some(rx);
         let _ = self
             .runtime
             .create(config.id.as_str(), &config.bundle, Some(&opts))
@@ -189,37 +177,84 @@ impl InitProcess {
                 log::error!("{}", e);
                 io::ErrorKind::Other
             })?;
-        debug_log!("RuncClient::create succeeded");
-        tx.send(()).unwrap(); // notify successfully created.
 
         if config.stdin != "" {
             // FIXME: have to open stdin
             debug_log!("fixme: have to open stdin");
+            self.open_stdin(&config.stdin)?;
         }
 
+        if config.terminal {
+            // socket exists
+            panic!("unimplemented");
+        } else {
+            // using ProcessIO
+            debug_log!("copy pipes...");
+            let proc_io = self.io.as_ref().unwrap();
+            proc_io.copy_pipes()?;
+            debug_log!("copy pipes ok");
+        }
         let mut pid_f = OpenOptions::new().read(true).open(&pid_file)?;
         let mut pid_str = String::new();
         pid_f.read_to_string(&mut pid_str)?;
         self.pid = pid_str.parse::<isize>().unwrap(); // content of init.pid is always a number
         self.state = ProcessState::Created;
-
         Ok(())
     }
 
-    pub fn start(&mut self) -> io::Result<()> { InitState::start(self) }
-    pub fn delete(&mut self) -> io::Result<()> { InitState::delete(self) }
-    pub fn state(&mut self) -> io::Result<ProcessState> { InitState::state(self) }
-    pub fn pause(&mut self) -> io::Result<()> { InitState::pause(self) }
-    pub fn resume(&mut self) -> io::Result<()> { InitState::resume(self) }
-    pub fn exec(&mut self, config: ExecConfig) -> io::Result<()> { InitState::exec(self, config) }
-    pub fn kill(&mut self, sig: u32, all: bool) -> io::Result<()> { InitState::kill(self, sig, all) }
-    pub fn set_exited(&mut self, status: isize) { InitState::set_exited(self, status) }
-    pub fn update(&mut self, resource_config: Option<&dyn std::any::Any>) -> io::Result<()> {InitState::update(self, resource_config)}
-    pub fn pid(&self) -> isize { Process::pid(self) }
-    pub fn exit_status(&self) -> isize { Process::exit_status(self) }
-    pub fn exited_at(&self) -> Option<chrono::DateTime<Utc>> { Process::exited_at(self) }
-    pub fn stdio(&self) -> StdioConfig { Process::stdio(self) }
-    pub fn wait(&mut self) -> io::Result<()> { Process::wait(self) }
+    pub fn start(&mut self) -> io::Result<()> {
+        InitState::start(self)
+    }
+    pub fn delete(&mut self) -> io::Result<()> {
+        InitState::delete(self)
+    }
+    pub fn state(&mut self) -> io::Result<ProcessState> {
+        InitState::state(self)
+    }
+    pub fn pause(&mut self) -> io::Result<()> {
+        InitState::pause(self)
+    }
+    pub fn resume(&mut self) -> io::Result<()> {
+        InitState::resume(self)
+    }
+    pub fn exec(&mut self, config: ExecConfig) -> io::Result<()> {
+        InitState::exec(self, config)
+    }
+    pub fn kill(&mut self, sig: u32, all: bool) -> io::Result<()> {
+        InitState::kill(self, sig, all)
+    }
+    pub fn set_exited(&mut self, status: isize) {
+        InitState::set_exited(self, status)
+    }
+    pub fn update(&mut self, resource_config: Option<&dyn std::any::Any>) -> io::Result<()> {
+        InitState::update(self, resource_config)
+    }
+    pub fn pid(&self) -> isize {
+        Process::pid(self)
+    }
+    pub fn exit_status(&self) -> isize {
+        Process::exit_status(self)
+    }
+    pub fn exited_at(&self) -> Option<chrono::DateTime<Utc>> {
+        Process::exited_at(self)
+    }
+    pub fn stdio(&self) -> StdioConfig {
+        Process::stdio(self)
+    }
+    pub fn wait(&mut self) -> io::Result<()> {
+        Process::wait(self)
+    }
+
+    fn open_stdin<P>(&mut self, path: P) -> io::Result<()>
+    where P: AsRef<Path>
+    {
+        debug_log!("Initprocess::open_stdin...");
+        let f = executor::block_on(async {
+            Fifo::open(path, OFlag::O_WRONLY | OFlag::O_NONBLOCK, 0).await
+        })?;
+        let _ = self.stdin.get_or_insert(f);
+        Ok(())
+    }
 }
 
 impl ContainerProcess for InitProcess {}
@@ -231,7 +266,7 @@ impl InitState for InitProcess {
         // while let Some(_) = self.wait_block {} // this produce deadlock because of Mutex of containers at Service
         // self.wait_block = Some(rx);
         // tx.send(()).unwrap(); // notify successfully started.
-        
+
         debug_log!("call RuncClient::start");
         let res = self.runtime.start(&self.id).map_err(|e| {
             log::error!("{}", e);
@@ -244,7 +279,7 @@ impl InitState for InitProcess {
 
     fn delete(&mut self) -> io::Result<()> {
         let _m = self.mu.lock().unwrap();
-        self.runtime.delete(&self.id, None, true).map_err(|e| {
+        self.runtime.delete(&self.id, None).map_err(|e| {
             log::error!("{}", e);
             io::ErrorKind::Other
         })?;
@@ -260,11 +295,11 @@ impl InitState for InitProcess {
         panic!("unimplemented!")
     }
 
-    fn update(&mut self, resource_config: Option<&dyn std::any::Any>) -> io::Result<()> {
+    fn update(&mut self, _resource_config: Option<&dyn std::any::Any>) -> io::Result<()> {
         panic!("unimplemented!")
     }
 
-    fn exec(&self, config: ExecConfig) -> io::Result<()> {
+    fn exec(&self, _config: ExecConfig) -> io::Result<()> {
         panic!("unimplemented!")
     }
 
@@ -331,10 +366,11 @@ impl Process for InitProcess {
             .wait_block
             .take()
             .ok_or_else(|| io::ErrorKind::NotFound)?;
-        let x = executor::block_on(async {
+        executor::block_on(async {
             // FIXME: need appropriate error handling
-            rx.await.map_err(|e| io::ErrorKind::Other)
+            rx.await.map_err(|_| io::ErrorKind::Other)
         })?;
+        self.state = ProcessState::Stopped;
         Ok(())
     }
 
