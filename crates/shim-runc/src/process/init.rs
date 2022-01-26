@@ -31,13 +31,13 @@ use futures::{
     channel::oneshot::{self, Receiver},
     executor,
 };
+use nix::fcntl::OFlag;
 use runc::options::KillOpts;
 use runc::RuncClient;
 use std::fs::OpenOptions;
 use std::io::{self, Read};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use nix::fcntl::OFlag;
 
 use crate::dbg::*;
 
@@ -69,7 +69,7 @@ pub struct InitProcess {
     // FIXME: suspended for difficulties
     // closers: Vec<???>,
     // might be ugly hack
-    stdin: Option<Fifo>, 
+    stdin: Option<Fifo>,
     pub stdio: StdioConfig,
 
     pub rootfs: String,
@@ -180,8 +180,9 @@ impl InitProcess {
 
         if config.stdin != "" {
             // FIXME: have to open stdin
-            debug_log!("fixme: have to open stdin");
+            debug_log!("Open stdin...");
             self.open_stdin(&config.stdin)?;
+            debug_log!("stdin opened.");
         }
 
         if config.terminal {
@@ -246,7 +247,8 @@ impl InitProcess {
     }
 
     fn open_stdin<P>(&mut self, path: P) -> io::Result<()>
-    where P: AsRef<Path>
+    where
+        P: AsRef<Path>,
     {
         debug_log!("Initprocess::open_stdin...");
         let f = executor::block_on(async {

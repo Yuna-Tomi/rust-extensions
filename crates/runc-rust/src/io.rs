@@ -170,8 +170,14 @@ impl Pipe {
     pub fn new() -> std::io::Result<Self> {
         let (read_fd, write_fd) = nix::unistd::pipe()?;
         unsafe {
-            std::mem::forget(File::from_raw_fd(read_fd));
-            std::mem::forget(File::from_raw_fd(write_fd));
+            let fr = File::from_raw_fd(read_fd);
+            let fw = File::from_raw_fd(write_fd);
+            debug_log!("read end for pipe: {:?}", fr);
+            debug_log!("write end for pipe: {:?}", fw);
+            std::mem::forget(fr);
+            std::mem::forget(fw);
+            // std::mem::forget(File::from_raw_fd(read_fd));
+            // std::mem::forget(File::from_raw_fd(write_fd));
         }
         Ok(Self { read_fd, write_fd })
     }

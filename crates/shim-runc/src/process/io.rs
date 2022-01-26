@@ -16,7 +16,8 @@
 use super::fifo::{self, Fifo};
 use containerd_runc_rust as runc;
 use futures::executor;
-use nix::fcntl::OFlag;
+use nix::fcntl::{self, OFlag};
+use nix::sys::stat::Mode;
 use runc::io::{IOOption, RuncIO, RuncPipedIO};
 use std::os::unix::prelude::FromRawFd;
 use std::path::Path;
@@ -259,16 +260,24 @@ async fn copy_pipes(io: Box<dyn RuncIO>, stdio: &StdioConfig) -> std::io::Result
             let r_fifo = Fifo::open(path, OFlag::O_RDONLY, 0).await?;
             let w = Box::pin(w_fifo);
             let r = Some(r_fifo);
+            debug_log!("spawn task with fifo...");
             tokio::task::spawn(dest(w, r, true)).await??;
+            debug_log!("task completed");
         } else if let Some(w) = same_file.take() {
+            debug_log!("pipe is not fifo -> use same file for task...");
             tokio::task::spawn(dest(w, None, true)).await??;
+            debug_log!("task completed");
             continue;
         } else {
-            let f = tokio::fs::OpenOptions::new()
-                .write(true)
-                .append(true)
-                .open(&path)
-                .await?;
+            debug_log!("pipe is not fifo -> new file...");
+            let fd = fcntl::open(path.as_str(), OFlag::O_WRONLY | OFlag::O_APPEND, Mode::empty())?;
+            // ugly hack
+            let f = unsafe { tokio::fs::File::from_raw_fd(fd) };
+            // let f = tokio::fs::OpenOptions::new()
+            //     .write(true)
+            //     .append(true)
+            //     .open(&path)
+            //     .await?;
             let w = Box::pin(f);
             let drop_w = if stdio.stdout == stdio.stderr {
                 // might be ugly hack
@@ -279,6 +288,7 @@ async fn copy_pipes(io: Box<dyn RuncIO>, stdio: &StdioConfig) -> std::io::Result
                 true
             };
             tokio::task::spawn(dest(w, None, drop_w)).await??;
+            debug_log!("task completed");
         }
     }
     if stdio.stdin == "" {
@@ -298,6 +308,8 @@ async fn copy_pipes(io: Box<dyn RuncIO>, stdio: &StdioConfig) -> std::io::Result
         }
         // don't have to forget these reader/writer
     };
-    tokio::task::spawn(copy_buf).await??;
+    debug_log!("task spawn");
+    // tokio::task::spawn(copy_buf).await??;
+    debug_log!("task completed");
     Ok(())
 }

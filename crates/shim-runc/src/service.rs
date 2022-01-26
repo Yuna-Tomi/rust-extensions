@@ -214,6 +214,9 @@ impl shim::Task for Service {
         }
 
         debug_log!("TTRPC call succeeded: create\npid={}", pid);
+        // sleep for debug.
+        std::thread::sleep(std::time::Duration::from_secs(100));
+        
         Ok(CreateTaskResponse {
             pid,
             unknown_fields,

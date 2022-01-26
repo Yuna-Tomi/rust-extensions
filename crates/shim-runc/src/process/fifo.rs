@@ -16,12 +16,12 @@
 
 use futures::pin_mut;
 use log::error;
-use nix::fcntl::OFlag;
+use nix::fcntl::{self, OFlag};
 use nix::sys::stat::{self, Mode};
 use nix::unistd;
 use std::fs;
 use std::os::unix::fs::FileTypeExt;
-use std::os::unix::prelude::{AsRawFd, RawFd, OpenOptionsExt};
+use std::os::unix::prelude::{AsRawFd, FromRawFd, OpenOptionsExt, RawFd};
 use std::path::Path;
 use std::pin::Pin;
 use std::task::Poll;
@@ -58,9 +58,15 @@ impl Fifo {
     where
         P: AsRef<Path>,
     {
-        debug_log!("Fifo::open: path={:?}, flag(base8)={:o}, perm={:o}", path.as_ref(), flag.bits(), perm);
+        debug_log!(
+            "Fifo::open: path={:?}, flag(base8)={:o}, perm={:o}",
+            path.as_ref(),
+            flag.bits(),
+            perm
+        );
 
         if let Err(e) = fs::metadata(&path) {
+            debug_log!("oops: {}", e);
             if e.kind() == std::io::ErrorKind::NotFound && flag & OFlag::O_CREAT != OFlag::empty() {
                 debug_log!("no fifo, then creating...");
                 let perm = Mode::from_bits_truncate(perm & 0o777);
@@ -81,9 +87,15 @@ impl Fifo {
 
         debug_log!("Create Hander...");
         let handle = Handler::new(&path).await?;
+        debug_log!("Hander created!");
+
 
         // ugly hack: have to concurrently prepare files
-        let file = OpenOptions::new().mode(flag.bits() as u32).open("").await?;
+        // also, it's better to use OpenOptions, which is not unsafe
+        debug_log!("Access fifo: {:?}", path.as_ref());
+        let fd = fcntl::open(path.as_ref(), flag, Mode::empty())?;
+        let file = unsafe { tokio::fs::File::from_raw_fd(fd) };
+        debug_log!("File for fifo prepared!");
 
         let mut fifo = Self {
             flag,
@@ -94,8 +106,8 @@ impl Fifo {
             handle,
         };
 
-        let close_task = async {};
-        tokio::task::spawn(async {}).await?;
+        // let close_task = async {};
+        // tokio::task::spawn(async {}).await?;
 
         // let file = tokio::task::spawn(async {
         //     // FIXME
@@ -192,20 +204,24 @@ pub struct Handler {
     name: String,
 }
 
-const O_PATH: u32 = OFlag::O_PATH.bits() as u32;
 impl Handler {
     pub async fn new<P>(path: P) -> std::io::Result<Self>
     where
         P: AsRef<Path>,
     {
-        debug_log!("Handler file open: {:?}", path.as_ref());
+        debug_log!(
+            "Handler file open: {:?}, mode={:o}",
+            path.as_ref(),
+            OFlag::O_PATH.bits()
+        );
         // Note that O_PATH file open can block if path is invalid (locked file)
         // ugly hack: its not good to wait
-        let f = std::fs::OpenOptions::new().mode(O_PATH).open(&path)?;
-        let file = tokio::fs::File::from(f);
+        // let f = std::fs::OpenOptions::new().mode(O_PATH).open(&path)?;
+        let fd = fcntl::open(path.as_ref(), OFlag::O_PATH, Mode::empty())?;
+        let file = unsafe { tokio::fs::File::from_raw_fd(fd) };
         // let file = OpenOptions::new().mode(O_PATH).open(&path).await?;
         debug_log!("Have read handler file!");
-        let fd = file.as_raw_fd();
+        // let fd = file.as_raw_fd();
         let stat = stat::fstat(fd)?;
         let handler = Handler {
             file,
@@ -219,11 +235,22 @@ impl Handler {
 
         debug_log!("check /proc just in case: follow the Go's implementation...");
         let _ = stat::stat(handler.proc_path().as_str())?;
+        debug_log!("checked stat.");
         Ok(handler)
     }
 }
 
 impl Handler {
+    pub fn path(&self) -> std::io::Result<String> {
+        let path = self.proc_path();
+        let stat = stat::stat(path.as_str())?;
+        if stat.st_dev != self.dev || stat.st_ino != self.ino {
+            Err(std::io::Error::from(nix::Error::EBADFD))
+        } else {
+            Ok(path)
+        }
+    }
+
     pub fn proc_path(&self) -> String {
         let mut s = "/proc/self/fd/".to_string();
         s.push_str(&self.fd.to_string());
