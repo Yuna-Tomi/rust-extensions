@@ -126,7 +126,7 @@ impl RuncConfig {
 
     pub fn build(self) -> Result<Runc, Error> {
         let command = utils::binary_path(self.command.unwrap_or(PathBuf::from(DEFAULT_COMMAND)))
-            .ok_or(Error::NotFoundError)?;
+            .ok_or(Error::NotFound)?;
         Ok(Runc {
             command,
             root: self.root,

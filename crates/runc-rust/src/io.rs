@@ -30,7 +30,15 @@ pub trait RuncIO: DynClone + Sync + Send {
     fn stdout(&self) -> Option<RawFd>;
     fn stderr(&self) -> Option<RawFd>;
     fn close(&mut self);
-    unsafe fn set(&self, cmd: &mut Command) ;
+    unsafe fn set(&self, cmd: &mut Command) {
+        panic!("set unimplemented!");
+    }
+    unsafe fn set_tk(&self, cmd: &mut tokio::process::Command) {
+        panic!("set_tk unimplemented!");
+    }
+    unsafe fn close_after_start(&self) {
+        panic!("close_agter_start unimplemented!");
+    }
 }
 
 dyn_clone::clone_trait_object!(RuncIO);
@@ -38,10 +46,7 @@ dyn_clone::clone_trait_object!(RuncIO);
 impl Debug for dyn RuncIO {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         // it's not good idea to call std~~() when debug.
-        write!(
-            f,
-            "RuncIO",
-        )
+        write!(f, "RuncIO",)
     }
 }
 
@@ -145,19 +150,49 @@ impl RuncIO for RuncPipedIO {
     unsafe fn set(&self, cmd: &mut Command) {
         if let Some(stdin) = &self.stdin {
             let f = File::from_raw_fd(stdin.read_fd);
+            debug_log!("set read end for stdin: {:?}", f);
             cmd.stdin(f);
         }
         if let Some(stdout) = &self.stdout {
             let f = File::from_raw_fd(stdout.write_fd);
+            debug_log!("set write end for stdout: {:?}", f);
             cmd.stdout(f);
         }
         if let Some(stderr) = &self.stderr {
             let f = File::from_raw_fd(stderr.write_fd);
+            debug_log!("set write end for stderr: {:?}", f);
             cmd.stderr(f);
         }
     }
-}
 
+    unsafe fn set_tk(&self, cmd: &mut tokio::process::Command) {
+        if let Some(stdin) = &self.stdin {
+            let f = File::from_raw_fd(stdin.read_fd);
+            debug_log!("set read end for stdin: {:?}", f);
+            cmd.stdin(f);
+        }
+        if let Some(stdout) = &self.stdout {
+            let f = File::from_raw_fd(stdout.write_fd);
+            debug_log!("set write end for stdout: {:?}", f);
+            cmd.stdout(f);
+        }
+        if let Some(stderr) = &self.stderr {
+            let f = File::from_raw_fd(stderr.write_fd);
+            debug_log!("set write end for stderr: {:?}", f);
+            cmd.stderr(f);
+        }
+    }
+
+    /// closing only write side (should be stdout/err "from" runc process)
+    unsafe fn close_after_start(&self) {
+        if let Some(stdout) = &self.stdout {
+            stdout.close_write()
+        }
+        if let Some(stderr) = &self.stderr {
+            stderr.close_write()
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Pipe {
@@ -176,8 +211,8 @@ impl Pipe {
         //     debug_log!("write end for pipe: {:?}", fw);
         //     std::mem::forget(fr);
         //     std::mem::forget(fw);
-        //     // std::mem::forget(File::from_raw_fd(read_fd));
-        //     // std::mem::forget(File::from_raw_fd(write_fd));
+        //     std::mem::forget(File::from_raw_fd(read_fd));
+        //     std::mem::forget(File::from_raw_fd(write_fd));
         // }
         Ok(Self { read_fd, write_fd })
     }
@@ -190,9 +225,17 @@ impl Pipe {
         self.write_fd
     }
 
+    unsafe fn close_write(&self) {
+        drop(File::from_raw_fd(self.write_fd));
+    }
+
+    unsafe fn close_read(&self) {
+        drop(File::from_raw_fd(self.read_fd));
+    }
+
     pub unsafe fn close(&self) {
-        let _ = File::from_raw_fd(self.read_fd);
-        let _ = File::from_raw_fd(self.write_fd);
+        self.close_read();
+        self.close_write();
     }
 }
 

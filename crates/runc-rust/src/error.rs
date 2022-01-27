@@ -40,38 +40,38 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Unable to extract test files: {0}")]
-    BundleExtractError(io::Error),
+    BundleExtractFailed(io::Error),
 
     #[error("Invalid path: {0}")]
-    InvalidPathError(io::Error),
+    InvalidPath(io::Error),
 
     #[error(transparent)]
-    JsonDeserializationError(#[from] serde_json::error::Error),
+    JsonDeserializationFailed(#[from] serde_json::error::Error),
 
     #[error("Missing container statistics")]
-    MissingContainerStatsError,
+    MissingContainerStats,
 
     #[error(transparent)]
-    ProcessSpawnError(io::Error),
+    ProcessSpawnFailed(io::Error),
 
     #[error("Error occured in runc: {0}")]
-    CommandError(io::Error),
+    InvalidCommand(io::Error),
 
     #[error("Runc command failed: status={status}, stdout=\"{stdout}\", stderr=\"{stderr}\"")]
-    CommandFaliedError {
+    CommandFailed {
         status: ExitStatus,
         stdout: String,
         stderr: String,
     },
 
     #[error("Runc command timed out: {0}")]
-    CommandTimeoutError(tokio::time::error::Elapsed),
+    CommandTimeout(tokio::time::error::Elapsed),
 
     #[error("Unable to parse runc version")]
-    InvalidVersionError,
+    InvalidVersion,
 
     #[error("Unable to locate the runc")]
-    NotFoundError,
+    NotFound,
 
     #[error("Error occurs with fs: {0}")]
     FileSystemError(io::Error),
@@ -82,20 +82,20 @@ pub enum Error {
     #[error(transparent)]
     SpecFileCleanupError(io::Error),
 
-    #[error("Failed to filnd valid path for spec file")]
-    SpecFilePathError,
+    #[error("Failed to find valid path for spec file")]
+    SpecFileNotFound,
 
     #[error("Top command is missing a pid header")]
-    TopMissingPidHeaderError,
+    TopMissingPidHeader,
 
     #[error("Top command returned an empty response")]
     TopShortResponseError,
 
     #[error("Unix socket connection error: {0}")]
-    UnixSocketConnectionError(io::Error),
+    UnixSocketConnectionFailed(io::Error),
 
     #[error("Unable to bind to unix socket: {0}")]
-    UnixSocketOpenError(io::Error),
+    UnixSocketBindFailed(io::Error),
 
     #[error("Unix socket failed to receive pty")]
     UnixSocketReceiveMessageError,
@@ -107,8 +107,8 @@ pub enum Error {
     EnvError(env::VarError),
 
     #[error("Sorry, this part of api is not implemented: {0}")]
-    UnimplementedError(String),
+    Unimplemented(String),
 
     #[error("Error occured in runc client: {0}")]
-    OtherError(io::Error),
+    Other(io::Error),
 }

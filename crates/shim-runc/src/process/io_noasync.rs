@@ -159,7 +159,11 @@ impl ProcessIO {
         if !self.copy {
             return Ok(());
         }
-        copy_pipes(self.io().expect("runc io not should be set before copying pipes."), &self.stdio)
+        copy_pipes(
+            self.io()
+                .expect("runc io not should be set before copying pipes."),
+            &self.stdio,
+        )
     }
 }
 
@@ -240,7 +244,7 @@ fn copy_pipes(io: Box<dyn RuncIO>, stdio: &StdioConfig) -> std::io::Result<()> {
                 Some(f) => {
                     debug_log!("readfile: {:?}", f);
                     debug_log!("fifo: {:?}", r);
-                    let f = unsafe {std::fs::File::from_raw_fd(f.as_raw_fd()) };
+                    let f = unsafe { std::fs::File::from_raw_fd(f.as_raw_fd()) };
                     let mut reader = BufReader::new(f);
                     // let _ = tokio::io::copy(&mut reader, &mut *writer)?;
                     let _ = std::io::copy(&mut reader, &mut *writer)?;
@@ -275,7 +279,11 @@ fn copy_pipes(io: Box<dyn RuncIO>, stdio: &StdioConfig) -> std::io::Result<()> {
             continue;
         } else {
             debug_log!("pipe is not fifo -> new file... {}", path.as_str());
-            let fd = fcntl::open(path.as_str(), OFlag::O_WRONLY | OFlag::O_APPEND, Mode::empty())?;
+            let fd = fcntl::open(
+                path.as_str(),
+                OFlag::O_WRONLY | OFlag::O_APPEND,
+                Mode::empty(),
+            )?;
             // ugly hack
             let f = unsafe { std::fs::File::from_raw_fd(fd) };
             // let f = tokio::fs::OpenOptions::new()

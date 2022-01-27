@@ -20,13 +20,13 @@ use nix::fcntl::{self, OFlag};
 use nix::sys::stat::{self, Mode};
 use nix::unistd;
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::prelude::{AsRawFd, FromRawFd, OpenOptionsExt, RawFd};
 use std::path::Path;
 use std::pin::Pin;
 use std::task::Poll;
 use tokio::sync::oneshot::{self, Receiver};
-use std::io::{Write};
 
 use crate::dbg::*;
 
@@ -88,7 +88,6 @@ impl Fifo {
         let handle = Handler::new(&path)?;
         debug_log!("Hander created!");
 
-
         // ugly hack: have to concurrently prepare files
         // also, it's better to use OpenOptions, which is not unsafe
         debug_log!("Access fifo: {:?}", path.as_ref());
@@ -146,8 +145,8 @@ impl Fifo {
         self.handle.close()
     }
 
-    pub fn write(&mut self) ->  std::io::Result<()> {
-        let mut f = unsafe {std::fs::File::from_raw_fd(self.file.as_raw_fd()) };
+    pub fn write(&mut self) -> std::io::Result<()> {
+        let mut f = unsafe { std::fs::File::from_raw_fd(self.file.as_raw_fd()) };
         let msg = "debug";
         debug_log!("writing messege into fifo... msg={}, fifo={:?}", msg, f);
         f.write(msg.as_bytes())?;
@@ -170,7 +169,6 @@ impl Write for Fifo {
         self.file.write_fmt(fmt)
     }
 
-
     fn write_vectored(&mut self, bufs: &[std::io::IoSlice<'_>]) -> std::io::Result<usize> {
         self.file.write_vectored(bufs)
     }
@@ -179,7 +177,6 @@ impl Write for Fifo {
         self.file.flush()
     }
 }
-
 
 // impl futures::AsyncWrite for Fifo {
 //     fn poll_write(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
@@ -198,7 +195,6 @@ impl Write for Fifo {
 //         Pin::new(&mut self.get_mut().file).poll_flush(cx)
 //     }
 // }
-
 
 // impl AsyncWrite for Fifo {
 //     fn poll_flush(

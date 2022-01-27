@@ -16,7 +16,7 @@
 use containerd_runc_rust as runc;
 use containerd_shim_protos as protos;
 use once_cell::sync::Lazy;
-use runc::{error::Error, RuncClient, RuncConfig};
+use runc::{error::Error, RuncAsyncClient, RuncClient, RuncConfig};
 use std::collections::HashMap;
 use std::sync::RwLock;
 use std::{io, path::Path};
@@ -200,4 +200,37 @@ where
 
     debug_log!("build runc client with config {:#?}", config);
     RuncClient::from_config(config)
+}
+
+pub fn new_async_runc<R, P>(
+    root: R,
+    path: P,
+    namespace: String,
+    runtime: &str,
+    systemd_cgroup: bool,
+) -> Result<RuncAsyncClient, Error>
+where
+    R: AsRef<str>,
+    P: AsRef<Path>,
+{
+    let root = Path::new(if root.as_ref() == "" {
+        DEFAULT_RUNC_ROOT
+    } else {
+        root.as_ref()
+    })
+    .join(namespace);
+    let log = path.as_ref().join("log.json");
+    let runtime = if runtime == "" { RUNC_NAME } else { runtime };
+
+    let config = RuncConfig::new()
+        .command(runtime)
+        .log(log)
+        .log_format_json()
+        .root(root)
+        .systemd_cgroup(systemd_cgroup);
+
+    // NOTE: this returns error only if the runc binary does not exists.
+
+    debug_log!("build runc client with config {:#?}", config);
+    RuncAsyncClient::from_config(config)
 }

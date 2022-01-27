@@ -57,12 +57,12 @@ impl Fifo {
     where
         P: AsRef<Path>,
     {
-        debug_log!(
-            "Fifo::open: path={:?}, flag(base8)={:o}, perm={:o}",
-            path.as_ref(),
-            flag.bits(),
-            perm
-        );
+        // debug_log!(
+        //     "Fifo::open: path={:?}, flag(base8)={:o}, perm={:o}",
+        //     path.as_ref(),
+        //     flag.bits(),
+        //     perm
+        // );
 
         if let Err(e) = fs::metadata(&path) {
             debug_log!("oops: {}", e);
@@ -89,8 +89,6 @@ impl Fifo {
         debug_log!("Handler created!");
         // ugly hack: have to concurrently prepare files
         let path = handle.path()?;
-        debug_log!("Access fifo: {:?}", path);
-        debug_log!("flag for fifo: {:?}", flag);
         let mut opts = tokio::fs::OpenOptions::new();
         match flag & OFlag::O_ACCMODE {
             OFlag::O_RDONLY => { opts.read(true); }
@@ -99,7 +97,22 @@ impl Fifo {
             _ => {}
         }
         opts.mode(0).custom_flags(flag.bits());
-        debug_log!("option set: {:?}", opts);
+        // debug_log!("option set: {:?}", opts);
+
+        /* DEBUG ------------------------------------------------------------------ */
+        let _out = std::process::Command::new("ls")
+            .arg("-l")
+            .arg("/proc/self/fd")
+            .output().map_err(|e| {
+                debug_log!("{}", e);
+                e
+            })?;
+        let _out = String::from_utf8(_out.stdout).unwrap();
+        let _out = _out.split("\n").collect::<Vec<&str>>();
+        debug_log!("Access fifo: path={:?}, flag={:?}", path, flag);
+        debug_log!("fds: {:#?}", _out);
+        /* DEBUG ------------------------------------------------------------------ */
+
         let file = opts.open(&path).await.map_err(|e| {
             debug_log!("fifo access open failed: {}", e);
             e
@@ -149,8 +162,8 @@ impl Fifo {
         self.handle.close()
     }
 
-    pub fn write(&mut self) ->  std::io::Result<()> {
-        let mut f = unsafe {std::fs::File::from_raw_fd(self.file.as_raw_fd()) };
+    pub fn write(&mut self) -> std::io::Result<()> {
+        let mut f = unsafe { std::fs::File::from_raw_fd(self.file.as_raw_fd()) };
         let msg = "debug";
         debug_log!("writing messege into fifo... msg={}, fifo={:?}", msg, f);
         f.write(msg.as_bytes())?;
@@ -177,7 +190,6 @@ impl Fifo {
 //         Pin::new(&mut self.get_mut().file).poll_flush(cx)
 //     }
 // }
-
 
 impl AsyncWrite for Fifo {
     fn poll_flush(

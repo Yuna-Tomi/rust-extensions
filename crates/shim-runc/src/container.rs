@@ -150,7 +150,7 @@ impl Container {
         let id = req.id.clone();
         let bundle = req.bundle.clone();
 
-        debug_log!("call InitProcess::new: {:?}", bundle);
+        // debug_log!("call InitProcess::new: {:?}", bundle);
         let mut init = InitProcess::new(
             &bundle,
             Path::new(&bundle).join("work"),

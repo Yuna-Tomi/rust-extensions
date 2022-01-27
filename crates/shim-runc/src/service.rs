@@ -216,7 +216,7 @@ impl shim::Task for Service {
         debug_log!("TTRPC call succeeded: create\npid={}", pid);
         // sleep for debug.
         std::thread::sleep(std::time::Duration::from_secs(100));
-        
+
         Ok(CreateTaskResponse {
             pid,
             unknown_fields,
@@ -511,11 +511,11 @@ impl shim::Task for Service {
 fn err_mapping(e: RuncError) -> (Code, String) {
     (
         match e {
-            RuncError::BundleExtractError(_) => Code::FAILED_PRECONDITION,
-            RuncError::NotFoundError => Code::NOT_FOUND,
-            RuncError::UnimplementedError(_) => Code::UNIMPLEMENTED,
-            RuncError::CommandError(_) | RuncError::CommandFaliedError { .. } => Code::ABORTED,
-            RuncError::CommandTimeoutError(_) => Code::DEADLINE_EXCEEDED,
+            RuncError::BundleExtractFailed(_) => Code::FAILED_PRECONDITION,
+            RuncError::NotFound => Code::NOT_FOUND,
+            RuncError::Unimplemented(_) => Code::UNIMPLEMENTED,
+            RuncError::InvalidCommand(_) | RuncError::CommandFailed { .. } => Code::ABORTED,
+            RuncError::CommandTimeout(_) => Code::DEADLINE_EXCEEDED,
             _ => Code::UNKNOWN,
         },
         e.to_string(),

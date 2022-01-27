@@ -17,10 +17,10 @@
 pub mod config;
 pub mod exec;
 pub mod fifo;
+mod fifo_noasync;
 pub mod init;
 pub mod io;
+mod io_noasync;
 pub mod state;
 mod traits;
 mod utils;
-mod io_noasync;
-mod fifo_noasync;

@@ -66,7 +66,7 @@ impl ReceivePtyMaster {
     /// Bind a unix domain socket to the provided path
     pub fn new(console_socket: PathBuf) -> Result<Self, Error> {
         let listener = UnixListener::bind(utils::abs_path_buf(&console_socket)?)
-            .map_err(Error::UnixSocketConnectionError)?;
+            .map_err(Error::UnixSocketConnectionFailed)?;
         Ok(Self {
             console_socket,
             temp_pty_dir: None,
@@ -85,7 +85,7 @@ impl ReceivePtyMaster {
             .map_err(Error::FileSystemError)?;
         let console_socket = utils::abs_path_buf(pty_dir.path().join("pty.sock"))?;
         let listener =
-            UnixListener::bind(&console_socket).map_err(Error::UnixSocketConnectionError)?;
+            UnixListener::bind(&console_socket).map_err(Error::UnixSocketConnectionFailed)?;
         Ok(Self {
             console_socket,
             temp_pty_dir: Some(pty_dir),
@@ -104,10 +104,10 @@ impl ReceivePtyMaster {
         // let (console_stream, _) = io
         //     .get_ref()
         //     .accept()
-        //     .map_err(|e| Error::UnixSocketConnectionError(e))?;
+        //     .map_err(|e| Error::UnixSocketConnectionFailed(e))?;
 
-        // let console_stream = AsyncFd::new(console_stream).map_err(|e| Error::OtherError(e))?;
-        Err(Error::UnimplementedError("PtyMaster.receive()".to_string()))
+        // let console_stream = AsyncFd::new(console_stream).map_err(|e| Error::Other(e))?;
+        Err(Error::Unimplemented("PtyMaster.receive()".to_string()))
 
         // loop {
         //     poll_fn(|cx| console_stream.poll_read_ready(cx))

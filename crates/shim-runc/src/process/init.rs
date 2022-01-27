@@ -35,13 +35,15 @@ use futures::{
 };
 use nix::fcntl::OFlag;
 use runc::options::KillOpts;
-use runc::RuncClient;
+use runc::RuncAsyncClient;
 use std::fs::OpenOptions;
 use std::io::{self, Read};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::dbg::*;
+
+const RUNTIME_NOT_FOUND_MSG: &str = "runtime not found, should be set";
 
 // Might be ugly hack: in Rust, it is not good idea to hold Mutex inside InitProcess because it disables to clone.
 /// Init process for a container
@@ -61,7 +63,7 @@ pub struct InitProcess {
     // console: ???,
     // platform: ???,
     io: Option<ProcessIO>,
-    runtime: RuncClient,
+    runtime: Option<RuncAsyncClient>,
 
     /// The pausing state
     pausing: bool, // here using primitive bool because InitProcess is designed to allow access only through Arc<Mutex<Self>>.
@@ -101,7 +103,7 @@ impl InitProcess {
         W: AsRef<Path>,
         R: AsRef<Path>,
     {
-        let runtime = utils::new_runc(
+        let runtime = utils::new_async_runc(
             opts.root,
             path,
             namespace,
@@ -130,7 +132,7 @@ impl InitProcess {
             id: config.id,
             bundle: config.bundle,
             io: None,
-            runtime,
+            runtime: Some(runtime),
             stdin: None,
             stdio,
             pausing: false,
@@ -168,18 +170,24 @@ impl InitProcess {
         debug_log!("    opts={:?}", opts);
         let (tx, rx) = oneshot::channel::<()>();
         self.wait_block = Some(rx);
-        let _ = self
-            .runtime
-            .create(config.id.as_str(), &config.bundle, Some(&opts))
+        /* debug ------------- */
+        let _out = std::process::Command::new("ls")
+            .arg("-l")
+            .arg("/proc/self/fd")
+            .output()
             .map_err(|e| {
-                log::error!("{}", e);
-                io::ErrorKind::Other
-            })?;
-        debug_log!("RuncClient::create succeeded");
+                debug_log!("{}", e);
+                e
+            })
+            .unwrap();
+        let _out = String::from_utf8(_out.stdout).unwrap();
+        let _out = _out.split("\n").collect::<Vec<&str>>();
+        debug_log!("fds: {:#?}", _out);
+        /* debug ------------- */
+
+        self.create_and_io_preparation(config, opts);
         tx.send(()).unwrap(); // notify successfully created.
 
-        self.io_preparation(config.stdin.clone(), config.terminal)?;
-        
         let mut pid_f = OpenOptions::new().read(true).open(&pid_file)?;
         let mut pid_str = String::new();
         pid_f.read_to_string(&mut pid_str)?;
@@ -193,17 +201,27 @@ impl InitProcess {
     // open another end in copy_pipes() or copy_console()
     // Note that we have WaitGroup in some crate like crossbeam,
     // but this style may be more comprehensive.
-    fn io_preparation(&mut self, stdin: String, socket: bool) -> io::Result<()> {
+    fn create_and_io_preparation(
+        &mut self,
+        config: CreateConfig,
+        opts: runc::options::CreateOpts,
+    ) -> std::io::Result<()> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(6)
             .build()?;
+
         rt.block_on(async {
+            let runtime = self.runtime.take().expect(RUNTIME_NOT_FOUND_MSG);
+            let create = runtime.create(config.id.as_str(), &config.bundle, Some(&opts));
+            debug_log!("create spawned");
             debug_log!("lets start async io preparation!");
-            // this task corresponds to openStdin() in 
+
+            // this task corresponds to openStdin() in Go
             // see https://github.com/containerd/containerd/blob/main/pkg/process/init.go#L178
             debug_log!("spawn open_stdin....");
+            let stdin = config.stdin;
             let open_stdin = tokio::spawn(async move {
-                if stdin !=  "" {
+                if stdin != "" {
                     debug_log!("Open stdin...");
                     let f = Fifo::open(&stdin, OFlag::O_WRONLY | OFlag::O_NONBLOCK, 0).await?;
                     Ok(Some(f))
@@ -211,14 +229,16 @@ impl InitProcess {
                     Ok::<Option<Fifo>, std::io::Error>(None)
                 }
             });
+
             debug_log!("spawned open_stdin");
 
             // this task corresponds to Copy
             // https://github.com/containerd/containerd/blob/main/pkg/process/init.go#L155
             debug_log!("spawn copy_io....");
             let proc_io = self.io.take().expect("processIO is required to set before");
-            let copy_io = tokio::spawn( async move {
-                if socket {
+            let use_socket = config.terminal;
+            let copy_io = tokio::spawn(async move {
+                if use_socket {
                     // socket exists
                     panic!("unimplemented");
                     // self.copy_console()?;
@@ -231,11 +251,16 @@ impl InitProcess {
                 }
             });
             debug_log!("spawned copy_io");
+
+            create.await.map_err(|e| {
+                log::error!("{}", e);
+                std::io::ErrorKind::Other
+            })?;
             if let Some(f) = open_stdin.await?? {
                 let _ = self.stdin.get_or_insert(f);
             }
+            let _ = self.runtime.get_or_insert(runtime);
             let _ = self.io.get_or_insert(copy_io.await??);
-                
             Ok::<(), std::io::Error>(())
         })
     }
@@ -282,7 +307,6 @@ impl InitProcess {
     pub fn wait(&mut self) -> io::Result<()> {
         Process::wait(self)
     }
-
 }
 
 impl ContainerProcess for InitProcess {}
@@ -296,10 +320,18 @@ impl InitState for InitProcess {
         // tx.send(()).unwrap(); // notify successfully started.
 
         debug_log!("call RuncClient::start");
-        let res = self.runtime.start(&self.id).map_err(|e| {
-            log::error!("{}", e);
-            io::ErrorKind::Other
+        let res = executor::block_on(async {
+            self.runtime
+                .as_ref()
+                .expect(RUNTIME_NOT_FOUND_MSG)
+                .start(&self.id)
+                .await
+                .map_err(|e| {
+                    log::error!("{}", e);
+                    io::ErrorKind::Other
+                })
         })?;
+
         debug_log!("started container: res={:?}", res);
         self.state = ProcessState::Running;
         Ok(())
@@ -307,9 +339,16 @@ impl InitState for InitProcess {
 
     fn delete(&mut self) -> io::Result<()> {
         let _m = self.mu.lock().unwrap();
-        self.runtime.delete(&self.id, None).map_err(|e| {
-            log::error!("{}", e);
-            io::ErrorKind::Other
+        let res = executor::block_on(async {
+            self.runtime
+                .as_ref()
+                .expect(RUNTIME_NOT_FOUND_MSG)
+                .delete(&self.id, None)
+                .await
+                .map_err(|e| {
+                    log::error!("{}", e);
+                    io::ErrorKind::Other
+                })
         })?;
         self.state = ProcessState::Deleted;
         Ok(())
@@ -334,9 +373,16 @@ impl InitState for InitProcess {
     fn kill(&mut self, sig: u32, all: bool) -> io::Result<()> {
         let _m = self.mu.lock().unwrap();
         let opts = KillOpts::new().all(all);
-        self.runtime.kill(&self.id, sig, Some(&opts)).map_err(|e| {
-            log::error!("{}", e);
-            io::ErrorKind::Other
+        let res = executor::block_on(async {
+            self.runtime
+                .as_ref()
+                .expect(RUNTIME_NOT_FOUND_MSG)
+                .kill(&self.id, sig, Some(&opts))
+                .await
+                .map_err(|e| {
+                    log::error!("{}", e);
+                    io::ErrorKind::Other
+                })
         })?;
         Ok(())
     }

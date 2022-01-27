@@ -2,12 +2,12 @@ use chrono::Local;
 use once_cell::sync::Lazy;
 use std::fs::OpenOptions;
 use std::io::Read;
-use std::{fs::File, sync::Mutex};
 use std::path::Path;
+use std::{fs::File, sync::Mutex};
 
 pub static LOG_STATIC_DBG: Lazy<Mutex<File>> = Lazy::new(|| {
     Mutex::new({
-        let mut path = String::new(); 
+        let mut path = String::new();
         let mut f = File::open("/root/debug_dir.txt").unwrap();
         f.read_to_string(&mut path).unwrap();
 

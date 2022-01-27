@@ -49,7 +49,7 @@ pub fn abs_path_buf(path: impl AsRef<Path>) -> Result<PathBuf, Error> {
     Ok(path
         .as_ref()
         .absolutize()
-        .map_err(Error::InvalidPathError)?
+        .map_err(Error::InvalidPath)?
         .to_path_buf())
 }
 
@@ -69,7 +69,7 @@ pub fn make_temp_file_in_runtime_dir() -> Result<(NamedTempFile, String), Error>
                 Uuid::new_v4(),
             )
         })
-        .ok_or_else(|| Error::SpecFilePathError)?;
+        .ok_or_else(|| Error::SpecFileNotFound)?;
     let temp_file = Builder::new()
         .prefix(&file_name)
         .tempfile()
