@@ -672,6 +672,7 @@ impl RuncAsyncClient {
                 let wait = Self::MONITOR.wait(rx);
                 let out = start.await.map_err(Error::InvalidCommand)?;
                 let Exit { status, .. } = wait.await.map_err(Error::InvalidCommand)?;
+                debug_log!("closing write end for stdout/err...");
                 unsafe { _io.close_after_start() }
                 std::mem::forget(cmd);
 
@@ -685,7 +686,6 @@ impl RuncAsyncClient {
                     });
                 }
 
-                debug_log!("closing write end for stdout/err...");
             }
             _ => {
                 let _ = self.launch(cmd, true, false).await?;

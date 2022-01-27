@@ -312,6 +312,7 @@ async fn copy_pipes(io: Box<dyn RuncIO>, stdio: &StdioConfig) -> std::io::Result
         let copy_buf = async move {
             let stdin = unsafe { tokio::fs::File::from_raw_fd(io.stdin().unwrap()) };
             debug_log!("stdin write end: {:?}", stdin);
+            debug_log!("stdin read end: {:?}", f);
             let mut writer = BufWriter::new(stdin);
             let mut reader = BufReader::new(f);
             debug_log!("stdin writer buffer: {:?}", writer.buffer());
