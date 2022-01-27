@@ -14,6 +14,7 @@
    limitations under the License.
 */
 
+use futures::{pin_mut, AsyncWrite};
 use log::error;
 use nix::fcntl::{self, OFlag};
 use nix::sys::stat::{self, Mode};
@@ -24,19 +25,19 @@ use std::os::unix::prelude::{AsRawFd, FromRawFd, OpenOptionsExt, RawFd};
 use std::path::Path;
 use std::pin::Pin;
 use std::task::Poll;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::oneshot::{self, Receiver};
+use std::io::{Write};
 
 use crate::dbg::*;
 
 #[derive(Debug)]
 pub struct Fifo {
     flag: OFlag,
-    // opened: Receiver<()>,
-    // closed: Receiver<()>,
-    // closing: Receiver<()>,
+    opened: Receiver<()>,
+    closed: Receiver<()>,
+    closing: Receiver<()>,
     // FIXME: it should be Option to delay real creation of file
-    file: tokio::fs::File,
+    file: std::fs::File,
     handle: Handler,
 }
 
@@ -52,8 +53,7 @@ impl Fifo {
     /// - OFlags.O_NONBLOCK - return Fifo even if other side of the
     ///     fifo isn't open. read/write will be connected after the actual fifo is
     ///     open or after fifo is closed.
-    #[rustfmt::skip]
-    pub async fn open<P>(path: P, mut flag: OFlag, perm: u32) -> std::io::Result<Self>
+    pub fn open<P>(path: P, mut flag: OFlag, perm: u32) -> std::io::Result<Self>
     where
         P: AsRef<Path>,
     {
@@ -74,9 +74,9 @@ impl Fifo {
                 return Err(e);
             }
         };
-        // let (opened_tx, opened) = oneshot::channel::<()>();
-        // let (closing_tx, closing) = oneshot::channel::<()>();
-        // let (closed_tcx, closed) = oneshot::channel::<()>();
+        let (opened_tx, opened) = oneshot::channel::<()>();
+        let (closing_tx, closing) = oneshot::channel::<()>();
+        let (closed_tcx, closed) = oneshot::channel::<()>();
 
         let block =
             flag & OFlag::O_NONBLOCK == OFlag::empty() || flag & OFlag::O_RDWR != OFlag::empty();
@@ -85,25 +85,29 @@ impl Fifo {
         flag &= !OFlag::O_NONBLOCK;
 
         debug_log!("Create Hander...");
-        let handle = Handler::new(&path).await?;
-        debug_log!("Handler created!");
+        let handle = Handler::new(&path)?;
+        debug_log!("Hander created!");
+
+
         // ugly hack: have to concurrently prepare files
-        let path = handle.path()?;
-        debug_log!("Access fifo: {:?}", path);
+        // also, it's better to use OpenOptions, which is not unsafe
+        debug_log!("Access fifo: {:?}", path.as_ref());
         debug_log!("flag for fifo: {:?}", flag);
-        let mut opts = tokio::fs::OpenOptions::new();
-        match flag & OFlag::O_ACCMODE {
-            OFlag::O_RDONLY => { opts.read(true); }
-            OFlag::O_WRONLY => { opts.write(true); }
-            OFlag::O_RDWR   => { opts.read(true).write(true); }
-            _ => {}
-        }
-        opts.mode(0).custom_flags(flag.bits());
-        debug_log!("option set: {:?}", opts);
-        let file = opts.open(&path).await.map_err(|e| {
-            debug_log!("fifo access open failed: {}", e);
-            e
-        })?;
+        let fd = fcntl::open(path.as_ref(), OFlag::O_RDWR, Mode::empty())?;
+        let file = unsafe { std::fs::File::from_raw_fd(fd) };
+        debug_log!("File for fifo prepared! : {:?}", file);
+
+        let mut fifo = Self {
+            flag,
+            file,
+            opened,
+            closing,
+            closed,
+            handle,
+        };
+
+        let stat = stat::fstat(fd)?;
+
         // let close_task = async {};
         // tokio::task::spawn(async {}).await?;
 
@@ -127,17 +131,10 @@ impl Fifo {
         //         Err(e) => Err(e)
         //     }
         // }).await?;
-        // if block {}
+        if block {}
 
         debug_log!("Fifo created");
-        Ok(Self {
-            flag,
-            file,
-            // opened,
-            // closing,
-            // closed,
-            handle,
-        })
+        Ok(fifo)
     }
 
     // pub fn read(&mut self) -> std::io::Result<usize> {
@@ -160,6 +157,30 @@ impl Fifo {
     }
 }
 
+impl Write for Fifo {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.file.write(buf)
+    }
+
+    fn write_all(&mut self, mut buf: &[u8]) -> std::io::Result<()> {
+        self.file.write_all(buf)
+    }
+
+    fn write_fmt(&mut self, fmt: std::fmt::Arguments<'_>) -> std::io::Result<()> {
+        self.file.write_fmt(fmt)
+    }
+
+
+    fn write_vectored(&mut self, bufs: &[std::io::IoSlice<'_>]) -> std::io::Result<usize> {
+        self.file.write_vectored(bufs)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
+}
+
+
 // impl futures::AsyncWrite for Fifo {
 //     fn poll_write(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
 //         Pin::new(&mut self.get_mut().file).poll_write(cx, buf)
@@ -179,47 +200,47 @@ impl Fifo {
 // }
 
 
-impl AsyncWrite for Fifo {
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), std::io::Error>> {
-        Pin::new(&mut self.get_mut().file).poll_flush(cx)
-    }
+// impl AsyncWrite for Fifo {
+//     fn poll_flush(
+//         self: std::pin::Pin<&mut Self>,
+//         cx: &mut std::task::Context<'_>,
+//     ) -> std::task::Poll<Result<(), std::io::Error>> {
+//         Pin::new(&mut self.get_mut().file).poll_flush(cx)
+//     }
 
-    fn poll_shutdown(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Result<(), std::io::Error>> {
-        Pin::new(&mut self.get_mut().file).poll_shutdown(cx)
-    }
+//     fn poll_shutdown(
+//         self: std::pin::Pin<&mut Self>,
+//         cx: &mut std::task::Context<'_>,
+//     ) -> Poll<Result<(), std::io::Error>> {
+//         Pin::new(&mut self.get_mut().file).poll_shutdown(cx)
+//     }
 
-    fn poll_write(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> Poll<Result<usize, std::io::Error>> {
-        Pin::new(&mut self.get_mut().file).poll_write(cx, buf)
-    }
+//     fn poll_write(
+//         self: std::pin::Pin<&mut Self>,
+//         cx: &mut std::task::Context<'_>,
+//         buf: &[u8],
+//     ) -> Poll<Result<usize, std::io::Error>> {
+//         Pin::new(&mut self.get_mut().file).poll_write(cx, buf)
+//     }
 
-    fn poll_write_vectored(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        bufs: &[std::io::IoSlice<'_>],
-    ) -> Poll<Result<usize, std::io::Error>> {
-        Pin::new(&mut self.get_mut().file).poll_write_vectored(cx, bufs)
-    }
-}
+//     fn poll_write_vectored(
+//         self: std::pin::Pin<&mut Self>,
+//         cx: &mut std::task::Context<'_>,
+//         bufs: &[std::io::IoSlice<'_>],
+//     ) -> Poll<Result<usize, std::io::Error>> {
+//         Pin::new(&mut self.get_mut().file).poll_write_vectored(cx, bufs)
+//     }
+// }
 
-impl AsyncRead for Fifo {
-    fn poll_read(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        Pin::new(&mut self.get_mut().file).poll_read(cx, buf)
-    }
-}
+// impl AsyncRead for Fifo {
+//     fn poll_read(
+//         self: std::pin::Pin<&mut Self>,
+//         cx: &mut std::task::Context<'_>,
+//         buf: &mut tokio::io::ReadBuf<'_>,
+//     ) -> std::task::Poll<std::io::Result<()>> {
+//         Pin::new(&mut self.get_mut().file).poll_read(cx, buf)
+//     }
+// }
 
 pub fn is_fifo<P>(path: P) -> std::io::Result<bool>
 where
@@ -235,7 +256,7 @@ where
 
 #[derive(Debug)]
 pub struct Handler {
-    file: async_std::fs::File,
+    file: std::fs::File,
     fd: RawFd,
     dev: u64,
     ino: u64,
@@ -244,7 +265,7 @@ pub struct Handler {
 
 /// File manager at fd level for Fifo.
 impl Handler {
-    pub async fn new<P>(path: P) -> std::io::Result<Self>
+    pub fn new<P>(path: P) -> std::io::Result<Self>
     where
         P: AsRef<Path>,
     {
@@ -256,7 +277,7 @@ impl Handler {
         // here, we use fcntl directly because O_PATH is not compatible for OpenOptions
         // see https://rust-lang.github.io/rfcs/1252-open-options.html#no-access-mode-set
         let fd = fcntl::open(path.as_ref(), OFlag::O_PATH, Mode::empty())?;
-        let file = unsafe { async_std::fs::File::from_raw_fd(fd) };
+        let file = unsafe { std::fs::File::from_raw_fd(fd) };
         // let file = OpenOptions::new().mode(O_PATH).open(&path).await?;
         debug_log!("Have read handler file: {:?}", file);
         // let fd = file.as_raw_fd();

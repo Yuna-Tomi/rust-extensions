@@ -161,13 +161,17 @@ impl InitProcess {
             debug_log!("IO prepared: {:?}", proc_io);
             opts = opts.io(proc_io.io().unwrap());
             let _ = self.io.get_or_insert(proc_io);
+            // FIXME: apply appropriate error
+            debug_log!("call RuncClient::create:");
+            debug_log!("    id={}, bundle={}", config.id, config.bundle);
+            debug_log!("    opts={:?}", opts);
+            let (tx, rx) = oneshot::channel::<()>();
+            self.wait_block = Some(rx);
+
+            debug_log!("RuncClient::create succeeded");
+            tx.send(()).unwrap(); // notify successfully created.
         }
-        // FIXME: apply appropriate error
-        debug_log!("call RuncClient::create:");
-        debug_log!("    id={}, bundle={}", config.id, config.bundle);
-        debug_log!("    opts={:?}", opts);
-        let (tx, rx) = oneshot::channel::<()>();
-        self.wait_block = Some(rx);
+
         let _ = self
             .runtime
             .create(config.id.as_str(), &config.bundle, Some(&opts))
@@ -175,69 +179,30 @@ impl InitProcess {
                 log::error!("{}", e);
                 io::ErrorKind::Other
             })?;
-        debug_log!("RuncClient::create succeeded");
-        tx.send(()).unwrap(); // notify successfully created.
 
-        self.io_preparation(config.stdin.clone(), config.terminal)?;
-        
+        if config.stdin != "" {
+            // FIXME: have to open stdin
+            debug_log!("Open stdin...");
+            self.open_stdin(&config.stdin)?;
+            debug_log!("stdin opened.");
+        }
+
+        if config.terminal {
+            // socket exists
+            panic!("unimplemented");
+        } else {
+            // using ProcessIO
+            debug_log!("copy pipes...");
+            let proc_io = self.io.as_ref().unwrap();
+            proc_io.copy_pipes()?;
+            debug_log!("copy pipes ok");
+        }
         let mut pid_f = OpenOptions::new().read(true).open(&pid_file)?;
         let mut pid_str = String::new();
         pid_f.read_to_string(&mut pid_str)?;
         self.pid = pid_str.parse::<isize>().unwrap(); // content of init.pid is always a number
         self.state = ProcessState::Created;
         Ok(())
-    }
-
-    // Block on preparation of io for communication between shim and runc.
-    // We call open on fifo in open_stdin() (write end), and then
-    // open another end in copy_pipes() or copy_console()
-    // Note that we have WaitGroup in some crate like crossbeam,
-    // but this style may be more comprehensive.
-    fn io_preparation(&mut self, stdin: String, socket: bool) -> io::Result<()> {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(6)
-            .build()?;
-        rt.block_on(async {
-            debug_log!("lets start async io preparation!");
-            // this task corresponds to openStdin() in 
-            // see https://github.com/containerd/containerd/blob/main/pkg/process/init.go#L178
-            debug_log!("spawn open_stdin....");
-            let open_stdin = tokio::spawn(async move {
-                if stdin !=  "" {
-                    debug_log!("Open stdin...");
-                    let f = Fifo::open(&stdin, OFlag::O_WRONLY | OFlag::O_NONBLOCK, 0).await?;
-                    Ok(Some(f))
-                } else {
-                    Ok::<Option<Fifo>, std::io::Error>(None)
-                }
-            });
-            debug_log!("spawned open_stdin");
-
-            // this task corresponds to Copy
-            // https://github.com/containerd/containerd/blob/main/pkg/process/init.go#L155
-            debug_log!("spawn copy_io....");
-            let proc_io = self.io.take().expect("processIO is required to set before");
-            let copy_io = tokio::spawn( async move {
-                if socket {
-                    // socket exists
-                    panic!("unimplemented");
-                    // self.copy_console()?;
-                } else {
-                    // using ProcessIO
-                    debug_log!("copy pipes...");
-                    proc_io.copy_pipes().await?;
-                    debug_log!("pipe copied!");
-                    Ok::<ProcessIO, std::io::Error>(proc_io)
-                }
-            });
-            debug_log!("spawned copy_io");
-            if let Some(f) = open_stdin.await?? {
-                let _ = self.stdin.get_or_insert(f);
-            }
-            let _ = self.io.get_or_insert(copy_io.await??);
-                
-            Ok::<(), std::io::Error>(())
-        })
     }
 
     pub fn start(&mut self) -> io::Result<()> {
@@ -283,6 +248,17 @@ impl InitProcess {
         Process::wait(self)
     }
 
+    fn open_stdin<P>(&mut self, path: P) -> io::Result<()>
+    where
+        P: AsRef<Path>,
+    {
+        let f = executor::block_on(async {
+            Fifo::open(path, OFlag::O_WRONLY, 0).await
+        })?;
+        // let f = Fifo::open(path, OFlag::O_WRONLY, 0)?;
+        let _ = self.stdin.get_or_insert(f);
+        Ok(())
+    }
 }
 
 impl ContainerProcess for InitProcess {}

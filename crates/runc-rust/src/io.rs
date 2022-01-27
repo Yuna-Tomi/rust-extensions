@@ -1,4 +1,3 @@
-use std::os::unix::prelude::RawFd;
 /*
    copyright the containerd authors.
 
@@ -19,6 +18,7 @@ use nix::unistd::{Gid, Uid};
 use std::fmt::{self, Debug, Formatter};
 use std::fs::File;
 use std::os::unix::io::FromRawFd;
+use std::os::unix::prelude::RawFd;
 use std::process::{Command, Stdio};
 
 use crate::dbg::*;
@@ -26,11 +26,11 @@ use crate::dbg::*;
 /// Users have to [`std::mem::forget()`] to prevent from closing fds when this return value drops.
 /// Especially, in such situation, you have to [`std::mem::forget()`] the [`std::process::Command`] you passed to the [`set()`].
 pub trait RuncIO: DynClone + Sync + Send {
-    fn stdin(&self) -> Option<File>;
-    fn stdout(&self) -> Option<File>;
-    fn stderr(&self) -> Option<File>;
+    fn stdin(&self) -> Option<RawFd>;
+    fn stdout(&self) -> Option<RawFd>;
+    fn stderr(&self) -> Option<RawFd>;
     fn close(&mut self);
-    fn set(&self, cmd: &mut Command) ;
+    unsafe fn set(&self, cmd: &mut Command) ;
 }
 
 dyn_clone::clone_trait_object!(RuncIO);
@@ -106,25 +106,25 @@ impl RuncPipedIO {
 }
 
 impl RuncIO for RuncPipedIO {
-    fn stdin(&self) -> Option<File> {
+    fn stdin(&self) -> Option<RawFd> {
         if let Some(stdin) = &self.stdin {
-            Some(unsafe { File::from_raw_fd(stdin.write_fd) })
+            Some(stdin.write_fd)
         } else {
             None
         }
     }
 
-    fn stdout(&self) -> Option<File> {
+    fn stdout(&self) -> Option<RawFd> {
         if let Some(stdout) = &self.stdout {
-            Some(unsafe { File::from_raw_fd(stdout.read_fd) })
+            Some(stdout.read_fd)
         } else {
             None
         }
     }
 
-    fn stderr(&self) -> Option<File> {
+    fn stderr(&self) -> Option<RawFd> {
         if let Some(stderr) = &self.stderr {
-            Some(unsafe { File::from_raw_fd(stderr.read_fd) })
+            Some(stderr.read_fd)
         } else {
             None
         }
@@ -142,17 +142,17 @@ impl RuncIO for RuncPipedIO {
         }
     }
 
-    fn set(&self, cmd: &mut Command) {
+    unsafe fn set(&self, cmd: &mut Command) {
         if let Some(stdin) = &self.stdin {
-            let f = unsafe { File::from_raw_fd(stdin.read_fd) };
+            let f = File::from_raw_fd(stdin.read_fd);
             cmd.stdin(f);
         }
         if let Some(stdout) = &self.stdout {
-            let f = unsafe { File::from_raw_fd(stdout.write_fd) };
+            let f = File::from_raw_fd(stdout.write_fd);
             cmd.stdout(f);
         }
         if let Some(stderr) = &self.stderr {
-            let f = unsafe { File::from_raw_fd(stderr.write_fd) };
+            let f = File::from_raw_fd(stderr.write_fd);
             cmd.stderr(f);
         }
     }
@@ -169,16 +169,16 @@ pub struct Pipe {
 impl Pipe {
     pub fn new() -> std::io::Result<Self> {
         let (read_fd, write_fd) = nix::unistd::pipe()?;
-        unsafe {
-            let fr = File::from_raw_fd(read_fd);
-            let fw = File::from_raw_fd(write_fd);
-            debug_log!("read end for pipe: {:?}", fr);
-            debug_log!("write end for pipe: {:?}", fw);
-            std::mem::forget(fr);
-            std::mem::forget(fw);
-            // std::mem::forget(File::from_raw_fd(read_fd));
-            // std::mem::forget(File::from_raw_fd(write_fd));
-        }
+        // unsafe {
+        //     let fr = File::from_raw_fd(read_fd);
+        //     let fw = File::from_raw_fd(write_fd);
+        //     debug_log!("read end for pipe: {:?}", fr);
+        //     debug_log!("write end for pipe: {:?}", fw);
+        //     std::mem::forget(fr);
+        //     std::mem::forget(fw);
+        //     // std::mem::forget(File::from_raw_fd(read_fd));
+        //     // std::mem::forget(File::from_raw_fd(write_fd));
+        // }
         Ok(Self { read_fd, write_fd })
     }
 
@@ -193,5 +193,11 @@ impl Pipe {
     pub unsafe fn close(&self) {
         let _ = File::from_raw_fd(self.read_fd);
         let _ = File::from_raw_fd(self.write_fd);
+    }
+}
+
+impl Drop for Pipe {
+    fn drop(&mut self) {
+        unsafe { self.close() }
     }
 }

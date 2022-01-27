@@ -22,3 +22,5 @@ pub mod io;
 pub mod state;
 mod traits;
 mod utils;
+mod io_noasync;
+mod fifo_noasync;

@@ -354,11 +354,15 @@ impl RuncClient {
         debug_log!("set command...");
         let mut cmd = self.command(&args)?;
         debug_log!("command is set");
+        let forget = 
         match opts {
-            Some(CreateOpts { io: Some(_io), .. }) => _io.set(&mut cmd),
-            _ => {}
-        }
-        self.launch(cmd, true, true)
+            Some(CreateOpts { io: Some(_io), .. }) => {
+                unsafe { _io.set(&mut cmd) }
+                true
+            }
+            _ => false,
+        };
+        self.launch(cmd, true, forget)
     }
 
     /// Delete a container
@@ -394,11 +398,14 @@ impl RuncClient {
         }
         args.push(id.to_string());
         let mut cmd = self.command(&args)?;
-        match opts {
-            Some(ExecOpts { io: Some(_io), .. }) => _io.set(&mut cmd),
-            _ => {}
-        }
-        let _ = self.launch(cmd, true, true)?;
+        let forget = match opts {
+            Some(ExecOpts { io: Some(_io), .. }) => {
+                unsafe { _io.set(&mut cmd) }
+                true
+            }
+            _ => false,
+        };
+        let _ = self.launch(cmd, true, forget)?;
         Ok(())
     }
 
@@ -410,7 +417,7 @@ impl RuncClient {
         }
         args.push(id.to_string());
         args.push(sig.to_string());
-        let _ = self.launch(self.command(&args)?, true, true)?;
+        let _ = self.launch(self.command(&args)?, true, false)?;
         Ok(())
     }
 
@@ -430,7 +437,7 @@ impl RuncClient {
     /// Pause a container
     pub fn pause(&self, id: &str) -> Result<()> {
         let args = ["pause".to_string(), id.to_string()];
-        let _ = self.launch(self.command(&args)?, true, true)?;
+        let _ = self.launch(self.command(&args)?, true, false)?;
         Ok(())
     }
 
@@ -458,7 +465,7 @@ impl RuncClient {
     /// Resume a container
     pub fn resume(&self, id: &str) -> Result<()> {
         let args = ["pause".to_string(), id.to_string()];
-        let _ = self.launch(self.command(&args)?, true, true)?;
+        let _ = self.launch(self.command(&args)?, true, false)?;
         Ok(())
     }
 
@@ -475,21 +482,33 @@ impl RuncClient {
         }
         args.push(utils::abs_string(bundle)?);
         args.push(id.to_string());
+        debug_log!("set command...");
+        let mut cmd = self.command(&args)?;
+        debug_log!("command is set");
+        let forget = 
+        match opts {
+            Some(CreateOpts { io: Some(_io), .. }) => {
+                unsafe { _io.set(&mut cmd) }
+                true
+            }
+            _ => false,
+        };
+
         // ugly hack?: is it ok to stick to run
-        self.launch(self.command(&args)?, true, true)
+        self.launch(self.command(&args)?, true, forget)
     }
 
     /// Start an already created container
     pub fn start(&self, id: &str) -> Result<RuncResponse> {
         let args = ["start".to_string(), id.to_string()];
         debug_log!("start: launch..."); 
-        self.launch(self.command(&args)?, true, true)
+        self.launch(self.command(&args)?, true, false)
     }
 
     /// Return the state of a container
     pub fn state(&self, id: &str) -> Result<Container> {
         let args = ["state".to_string(), id.to_string()];
-        let res = self.launch(self.command(&args)?, true, true)?;
+        let res = self.launch(self.command(&args)?, true, false)?;
         Ok(serde_json::from_str(&res.output).map_err(Error::JsonDeserializationError)?)
     }
 
@@ -524,7 +543,7 @@ impl RuncClient {
             file_name,
             id.to_string(),
         ];
-        self.launch(self.command(&args)?, true, true)?;
+        self.launch(self.command(&args)?, true, false)?;
         Ok(())
     }
 }

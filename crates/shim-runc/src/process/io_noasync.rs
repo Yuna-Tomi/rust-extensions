@@ -13,8 +13,9 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 */
-use super::fifo::{self, Fifo};
+use super::fifo_noasync::{self, Fifo};
 use containerd_runc_rust as runc;
+use futures::executor;
 use nix::fcntl::{self, OFlag};
 use nix::sys::stat::Mode;
 use runc::io::{IOOption, RuncIO, RuncPipedIO};
@@ -29,7 +30,8 @@ use std::{
     sync::{Arc, RwLock},
 };
 use std::{fs::DirBuilder, os::unix::prelude::AsRawFd};
-use tokio::io::{AsyncRead, AsyncWrite, BufReader, BufWriter};
+// use tokio::io::{AsyncRead, AsyncWrite, BufReader, BufWriter};
+use std::io::{BufReader, BufWriter};
 use url::{ParseError, Url};
 
 use crate::dbg::*;
@@ -153,13 +155,11 @@ impl ProcessIO {
     }
 
     // FIXME: approriate pipe copy
-    pub async fn copy_pipes(&self) -> std::io::Result<()> {
+    pub fn copy_pipes(&self) -> std::io::Result<()> {
         if !self.copy {
-            return Ok(())
-        } else {
-            let io = self.io().expect("runc io should be set before copying.");
-            copy_pipes(io, &self.stdio).await
+            return Ok(());
         }
+        copy_pipes(self.io().expect("runc io not should be set before copying pipes."), &self.stdio)
     }
 }
 
@@ -224,33 +224,32 @@ fn conditional_io_options(stdio: &StdioConfig) -> IOOption {
 
 const FIFO_ERR_MSG: [&str; 2] = ["error copying stdout", "error copying stderr"];
 
-async fn copy_pipes(io: Box<dyn RuncIO>, stdio: &StdioConfig) -> std::io::Result<()> {
+fn copy_pipes(io: Box<dyn RuncIO>, stdio: &StdioConfig) -> std::io::Result<()> {
     let io_files = vec![io.stdout(), io.stderr()];
+    std::mem::forget(io);
     debug_log!("io files: {:?}", io_files);
-    let out_err = vec![stdio.stdout.clone(), stdio.stderr.clone()];
+    let out_err = vec![&stdio.stdout, &stdio.stderr];
     let mut same_file = None;
-    let mut tasks = vec![];
-    for (ix, (reader_fd, path)) in io_files.into_iter().zip(out_err.into_iter()).enumerate() {
+    for (ix, (io_file, path)) in io_files.into_iter().zip(out_err.into_iter()).enumerate() {
         // Note that each io_file (stdout/stderr) have to std::mem::forget, in order not to close pipe.
         // Also, third argument corresponds to "not forget writer" for twice use of Fifo, in case of stdout==stderr.
-        let dest = |mut writer: Pin<Box<dyn AsyncWrite + Unpin + Send>>,
+        let dest = |mut writer: Pin<Box<dyn std::io::Write + Unpin + Send>>,
                     r: Option<Fifo>,
-                    drop_w: bool,
-                    ix: usize,
-                    reader_fd: Option<RawFd>| async move {
-            match reader_fd {
+                    drop_w: bool| {
+            match io_file {
                 Some(f) => {
-                    let f = unsafe { tokio::fs::File::from_raw_fd(f) };
-                    debug_log!("{} readfile: {:?}", ix, f);
-                    debug_log!("{} fifo: {:?}", ix, r);
+                    debug_log!("readfile: {:?}", f);
+                    debug_log!("fifo: {:?}", r);
+                    let f = unsafe {std::fs::File::from_raw_fd(f.as_raw_fd()) };
                     let mut reader = BufReader::new(f);
-                    // let _ = tokio::io::copy(&mut reader, &mut *writer).await?;
-                    let _ = tokio::io::copy(&mut reader, &mut *writer).await?;
+                    // let _ = tokio::io::copy(&mut reader, &mut *writer)?;
+                    let _ = std::io::copy(&mut reader, &mut *writer)?;
                     std::mem::forget(reader);
                     drop(r);
                     if !drop_w {
                         std::mem::forget(writer);
                     }
+                    debug_log!("finished copy!");
                     Ok(())
                 }
                 None => {
@@ -260,79 +259,61 @@ async fn copy_pipes(io: Box<dyn RuncIO>, stdio: &StdioConfig) -> std::io::Result
             }
         };
         // might be ugly hack
-        if fifo::is_fifo(&path)? {
-            let t = tokio::task::spawn(async move {
-                let w_mkfifo = Fifo::open(&path, OFlag::O_WRONLY, 0);
-                let r_mkfifo = Fifo::open(&path, OFlag::O_RDONLY, 0);
-                let w_fifo = w_mkfifo.await.map_err(|e| {
-                    debug_log!("error in await w_fifo {}", e);
-                    e
-                })?;
-                let r_fifo = r_mkfifo.await.map_err(|e| {
-                    debug_log!("error in await r_fifo {}", e);
-                    e
-                })?;
-                debug_log!("spawn task with fifo...");
-                debug_log!("read end: {:?}", r_fifo);
-                debug_log!("write end: {:?}", w_fifo);
-                let w = Box::pin(w_fifo);
-                let r = Some(r_fifo);
-                dest(w, r, true, ix, reader_fd).await
-            });
-            tasks.push(t);
+        if fifo_noasync::is_fifo(path)? {
+            let mut w_fifo = Fifo::open(path, OFlag::O_WRONLY, 0)?;
+            let r_fifo = Fifo::open(path, OFlag::O_RDONLY, 0)?;
+
+            debug_log!("spawn task with fifo...");
+            debug_log!("read end: {:?}", r_fifo);
+            debug_log!("write end: {:?}", w_fifo);
+            let w = Box::pin(w_fifo);
+            let r = Some(r_fifo);
+            dest(w, r, true)?;
         } else if let Some(w) = same_file.take() {
             debug_log!("pipe is not fifo -> use same file for task...");
-            let t = tokio::task::spawn(dest(w, None, true, ix, reader_fd));
-            tasks.push(t);
-            debug_log!("task completed");
+            dest(w, None, true)?;
             continue;
         } else {
             debug_log!("pipe is not fifo -> new file... {}", path.as_str());
-            let drop_w = stdio.stdout == stdio.stderr;
-            let t = tokio::task::spawn(async move {
-                let fd = fcntl::open(path.as_str(), OFlag::O_WRONLY | OFlag::O_APPEND, Mode::empty())?;
-                // ugly hack
-                let f = unsafe { tokio::fs::File::from_raw_fd(fd) };
-                // let f = tokio::fs::OpenOptions::new()
-                //     .write(true)
-                //     .append(true)
-                //     .open(&path)
-                //     .await?;
-                let w = Box::pin(f);
-                // if drop_w {
-                //     // might be ugly hack
-                //     let f = unsafe { tokio::fs::File::from_raw_fd(w.as_raw_fd()) };
-                //     let _ = same_file.get_or_insert(Box::pin(f));
-                // }
-                dest(w, None, drop_w, ix, reader_fd).await
-            });
-            tasks.push(t);
+            let fd = fcntl::open(path.as_str(), OFlag::O_WRONLY | OFlag::O_APPEND, Mode::empty())?;
+            // ugly hack
+            let f = unsafe { std::fs::File::from_raw_fd(fd) };
+            // let f = tokio::fs::OpenOptions::new()
+            //     .write(true)
+            //     .append(true)
+            //     .open(&path)
+            //     ?;
+            let w = Box::pin(f);
+            let drop_w = if stdio.stdout == stdio.stderr {
+                // might be ugly hack
+                let f = unsafe { std::fs::File::from_raw_fd(w.as_raw_fd()) };
+                let _ = same_file.get_or_insert(Box::pin(f));
+                false
+            } else {
+                true
+            };
+            dest(w, None, drop_w)?;
         }
     }
     if stdio.stdin == "" {
         return Ok(());
     }
-    let f = Fifo::open(&stdio.stdin, OFlag::O_RDONLY | OFlag::O_NONBLOCK, 0).await?;
-    let copy_buf = async move {
-        let stdin = unsafe {tokio::fs::File::from_raw_fd(io.stdin().unwrap())};
-        let mut writer = BufWriter::new(stdin);
-        let mut reader = BufReader::new(f);
-        match tokio::io::copy(&mut reader, &mut writer).await {
-            Ok(x) => Ok(()),
-            Err(e) => {
-                log::error!("{}", e);
-                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
-            }
-        }
-        // don't have to forget these reader/writer
-    };
+    let f = Fifo::open(&stdio.stdin, OFlag::O_RDONLY | OFlag::O_NONBLOCK, 0)?;
+    // let copy_buf = async move {
+    //     let stdin = tokio::fs::File::from(io.stdin().unwrap());
+    //     let mut writer = BufWriter::new(stdin);
+    //     let mut reader = BufReader::new(f);
+    //     match tokio::io::copy(&mut reader, &mut writer) {
+    //         Ok(x) => Ok(()),
+    //         Err(e) => {
+    //             log::error!("{}", e);
+    //             Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+    //         }
+    //     }
+    //     // don't have to forget these reader/writer
+    // };
     debug_log!("task spawn");
-    let t = tokio::task::spawn(copy_buf);
-    tasks.push(t);
-
-    for t in tasks {
-        t.await??;
-    }
+    // tokio::task::spawn(copy_buf)??;
     debug_log!("task completed");
     Ok(())
 }

@@ -123,6 +123,7 @@ impl Container {
 
         // split functionality in order to cleanup rootfs when error occurs after mount.
         Self::inner_new(&rootfs, req, namespace, opts, config, mounts).map_err(|e| {
+            debug_log!("error in Container::inner_new ... {}", e);
             if let Err(_) = sys_mount::unmount(rootfs, UnmountFlags::empty()) {
                 debug_log!("failed to cleanup mounts.");
             }
