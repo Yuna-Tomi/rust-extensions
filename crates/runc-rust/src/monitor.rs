@@ -21,6 +21,8 @@ use std::process::Output;
 use tokio::sync::oneshot::{Receiver, Sender};
 
 use crate::dbg::*;
+use std::panic;
+
 
 // ProcessMonitor for handling runc process exit
 // Implementation is different from Go's, because if you return Sender in start() and want to
@@ -37,12 +39,17 @@ pub trait ProcessMonitor {
         forget: bool,
     ) -> std::io::Result<Output> {
         debug_log!("spawn command... {:?}", cmd);
+
+        panic::set_hook(Box::new(|x| {
+            debug_log!("{}", x);
+            std::process::exit(1);
+        }));
         let chi = cmd.spawn().map_err(|e| {
-            debug_log!("{}", e);
+            // debug_log!("{}", e);
             e
         })?;
-        let pid = chi.id(); // this cause panic, because tokio::process::Child returns None after child is polled to completion.
-        debug_log!("command spawned {:?}", cmd);
+        let pid = chi.id().expect("failed to take pid of the container process.");
+        debug_log!("command spawned {:?}, {:?}", cmd, pid);
         let out = chi.wait_with_output().await?;
         let ts = Utc::now();
         match tx.send(Exit {
@@ -51,7 +58,7 @@ pub trait ProcessMonitor {
             status: out.status.code().unwrap(),
         }) {
             Ok(_) => {
-                debug_log!("command and notification succeeded: {:?}", cmd);
+                // debug_log!("command and notification succeeded: {:?}", cmd);
                 if forget {
                     std::mem::forget(cmd);
                 }
@@ -65,7 +72,7 @@ pub trait ProcessMonitor {
         }
     }
     async fn wait(&self, rx: Receiver<Exit>) -> std::io::Result<Exit> {
-        debug_log!("waiting...");
+        // debug_log!("waiting...");
         rx.await.map_err(|e| {
             error!("sender dropped.");
             std::io::Error::from(std::io::ErrorKind::BrokenPipe)
@@ -87,6 +94,6 @@ impl DefaultMonitor {
 #[derive(Debug)]
 pub struct Exit {
     pub ts: DateTime<Utc>,
-    pub pid: Option<u32>,
+    pub pid: u32,
     pub status: i32,
 }

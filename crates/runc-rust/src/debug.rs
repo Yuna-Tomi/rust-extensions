@@ -7,15 +7,21 @@ use std::{fs::File, sync::Mutex};
 
 pub static LOG_STATIC_DBG: Lazy<Mutex<File>> = Lazy::new(|| {
     Mutex::new({
+        // You have to prepare debug_dir.txt that stores the log directory you want to save your log.
+        log::error!("extracting HOME...");
+        let home = std::env::var_os("HOME").unwrap();
+        let path = Path::new(&home).join("debug_dir.txt");
+        let mut f = OpenOptions::new()
+            .read(true)
+            .open(&path)
+            .unwrap();
         let mut path = String::new();
-        let mut f = File::open("/root/debug_dir.txt").unwrap();
         f.read_to_string(&mut path).unwrap();
         drop(f);
 
         let r = rand::random::<u16>();
         let now = Local::now().format("%Y:%m:%d-%H:%M:%S").to_string();
         let logfile = Path::new(&path).join(&format!("debug-runc{}-{}.log", now, r));
-        // panic!("{}", format!("{}{}.log", LOGFILE, now));
         OpenOptions::new()
             .write(true)
             .create(true)

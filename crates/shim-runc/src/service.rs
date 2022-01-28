@@ -39,7 +39,6 @@ use protos::shim::{
         WaitRequest, WaitResponse,
     },
 };
-use runc::console::ReceivePtyMaster;
 use runc::error::Error as RuncError;
 use runc::options::*;
 use shim::{api, ExitSignal, TtrpcContext, TtrpcResult};
@@ -58,10 +57,6 @@ const GROUP_LABELS: [&str; 2] = [
 
 const RUN_DIR: &str = "/run/containerd/runc";
 const TASK_DIR: &str = "/run/containerd/io.containerd.runtime.v2.task";
-
-static PTY_MASTER: Lazy<RwLock<ReceivePtyMaster>> = Lazy::new(|| {
-    RwLock::new(ReceivePtyMaster::new_with_temp_sock().expect("failed to bind socket."))
-});
 
 static CONTAINERS: Lazy<RwLock<HashMap<String, Container>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));

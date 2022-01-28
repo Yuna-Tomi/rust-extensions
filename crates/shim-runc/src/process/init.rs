@@ -18,11 +18,8 @@
 // https://github.com/containerd/containerd/blob/main/pkg/process/init.go
 // https://github.com/containerd/containerd/blob/main/pkg/process/init_state.go
 
-use super::config::{CreateConfig, ExecConfig};
-// use super::fifo_noasync::Fifo;
+use super::config::{CreateConfig, ExecConfig, StdioConfig};
 use super::fifo::Fifo;
-use super::io::{ProcessIO, StdioConfig};
-// use super::io_noasync::{ProcessIO, StdioConfig};
 use super::state::ProcessState;
 use super::traits::{ContainerProcess, InitState, Process};
 use crate::options::oci::Options;
@@ -30,7 +27,6 @@ use crate::utils;
 use chrono::Utc;
 use containerd_runc_rust as runc;
 use futures::{
-    channel::oneshot::{self, Receiver},
     executor,
 };
 use nix::fcntl::OFlag;
@@ -45,7 +41,6 @@ use crate::dbg::*;
 
 const RUNTIME_NOT_FOUND_MSG: &str = "runtime not found, should be set";
 
-// Might be ugly hack: in Rust, it is not good idea to hold Mutex inside InitProcess because it disables to clone.
 /// Init process for a container
 #[derive(Debug)]
 pub struct InitProcess {
@@ -54,7 +49,7 @@ pub struct InitProcess {
     // represents state transition
     pub state: ProcessState,
 
-    wait_block: Option<Receiver<()>>,
+    wait_block: Option<tokio::sync::oneshot::Receiver<()>>,
 
     pub work_dir: String,
     pub id: String,
@@ -62,11 +57,13 @@ pub struct InitProcess {
     // FIXME: suspended for difficulties
     // console: ???,
     // platform: ???,
-    io: Option<ProcessIO>,
+
+    // FIXME: suspended for difficulties
+    // io: Option<super::io::ProcessIO>,
     runtime: Option<RuncAsyncClient>,
 
     /// The pausing state
-    pausing: bool, // here using primitive bool because InitProcess is designed to allow access only through Arc<Mutex<Self>>.
+    pausing: bool,
     status: isize,
     exited: Option<chrono::DateTime<Utc>>,
     pid: isize,
@@ -118,8 +115,6 @@ impl InitProcess {
             terminal: config.terminal,
         };
 
-        debug_log!("InitProcess stdio: {:?}", stdio);
-
         Ok(Self {
             mu: Arc::default(),
             state: ProcessState::Unknown,
@@ -131,7 +126,7 @@ impl InitProcess {
                 .unwrap(),
             id: config.id,
             bundle: config.bundle,
-            io: None,
+            // io: None,
             runtime: Some(runtime),
             stdin: None,
             stdio,
@@ -150,30 +145,25 @@ impl InitProcess {
     /// Create the process with the provided config
     pub fn create(&mut self, config: CreateConfig) -> io::Result<()> {
         let pid_file = Path::new(&self.bundle).join("init.pid");
-        let mut opts = runc::options::CreateOpts::new()
+        let opts = runc::options::CreateOpts::new()
             .pid_file(&pid_file)
             .no_pivot(self.no_pivot_root);
+
         if config.terminal {
             panic!("unimplemented");
             // FIXME: using console is suspended for difficulties
         } else {
             // note that io contains nothing until this time, then we can insert new ProcessIO certainly.
-            debug_log!("prepare IO...");
-            let proc_io = ProcessIO::new(&self.id, self.io_uid, self.io_gid, self.stdio.clone())?;
-            debug_log!("IO prepared: {:?}", proc_io);
-            // ugly hack: it' not good to clone RuncIO,
-            // because dropping instance can cause unexpected close
-            opts = opts.io(proc_io.io().unwrap());
-            let _ = self.io.get_or_insert(proc_io);
-        }
-        // FIXME: apply appropriate error
-        debug_log!("call RuncClient::create:");
-        debug_log!("    id={}, bundle={}", config.id, config.bundle);
-        debug_log!("    opts={:?}", opts);
-        let (tx, rx) = oneshot::channel::<()>();
-        self.wait_block = Some(rx);
+            // FIXME: process io settings is suspended for difficulties
 
-        debug_log!("fds: {:#?}", check_fds!());
+            // let proc_io = ProcessIO::new(&self.id, self.io_uid, self.io_gid, self.stdio.clone())?;
+            // opts = opts.io(proc_io.io().unwrap());
+            // let _ = self.io.get_or_insert(proc_io);
+        }
+
+        // FIXME: apply appropriate error
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        self.wait_block = Some(rx);
         self.create_and_io_preparation(config, opts)?;
         tx.send(()).unwrap(); // notify successfully created.
 
@@ -195,79 +185,34 @@ impl InitProcess {
         config: CreateConfig,
         opts: runc::options::CreateOpts,
     ) -> std::io::Result<()> {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(6)
-            .build()?;
-
+        let rt = tokio::runtime::Builder::new_current_thread().build()?;
         rt.block_on(async {
             let CreateConfig {
                 id,
                 bundle,
-                terminal,
-                stdin,
+                // terminal,
+                // stdin,
                 ..
             } = config;
 
+            // might be ugly hack: take runtime(runc client) and return it after executing "create" on green thread.
             let runtime = self.runtime.take().expect(RUNTIME_NOT_FOUND_MSG);
             let create = tokio::spawn(async move {
-                runtime.create(&id, bundle, Some(&opts)).await?;
+                runtime.create(&id, bundle, Some(&opts))?;
                 // ugly hack to workaround
                 Ok::<RuncAsyncClient, runc::error::Error>(runtime)
             });
 
-            debug_log!("create spawned");
-            debug_log!("lets start async io preparation!");
-
-            // this task corresponds to openStdin() in Go
+            // FIXME: need task corresponds to openStdin() in Go
             // see https://github.com/containerd/containerd/blob/main/pkg/process/init.go#L178
-            debug_log!("spawn open_stdin....");
-            let open_stdin = tokio::spawn(async move {
-                // skip stdin setting for debug
-                return Ok(None);
-                if stdin != "" {
-                    debug_log!("Open stdin...");
-                    let f = Fifo::open(&stdin, OFlag::O_WRONLY | OFlag::O_NONBLOCK, 0).await?;
-                    Ok(Some(f))
-                } else {
-                    Ok::<Option<Fifo>, std::io::Error>(None)
-                }
-            });
+            // let open_stdin = tokio::spawn(...);
 
-            debug_log!("spawned open_stdin");
-
-            // this task corresponds to Copy
-            // https://github.com/containerd/containerd/blob/main/pkg/process/init.go#L155
-            debug_log!("spawn copy_io....");
-            let proc_io = self.io.take().expect("processIO is required to set before");
-
-            debug_log!("just checking fds... {:#?}", check_fds!());
-
-            let copy_io = tokio::spawn(async move {
-                if proc_io.copy {
-                    return Ok(proc_io);
-                }
-                if terminal {
-                    // socket exists
-                    panic!("unimplemented");
-                    // self.copy_console()?;
-                } else {
-                    // using ProcessIO
-                    debug_log!("copy pipes...");
-                    proc_io.copy_pipes().await?;
-                    debug_log!("pipe copied!");
-                    Ok::<ProcessIO, std::io::Error>(proc_io)
-                }
-            });
-            debug_log!("spawned copy_io");
-
-            if let Some(f) = open_stdin.await?? {
-                let _ = self.stdin.get_or_insert(f);
-            }
-            let _ = self.io.get_or_insert(copy_io.await??);
-            debug_log!("pipe copy ok!");
+            // FIXME: need task corresponds to Copy() in Go
+            // see https://github.com/containerd/containerd/blob/main/pkg/process/init.go#L178
+            // let open_stdin = tokio::spawn(...);
 
             let runtime = create.await.map_err(|e| {
-                debug_log!("runtime create failed.");
+                debug_log!("runtime create failed: {:#?}", e);
                 e
             })?
                 .map_err(|e| {
@@ -353,7 +298,7 @@ impl InitState for InitProcess {
 
     fn delete(&mut self) -> io::Result<()> {
         let _m = self.mu.lock().unwrap();
-        let res = executor::block_on(async {
+        executor::block_on(async {
             self.runtime
                 .as_ref()
                 .expect(RUNTIME_NOT_FOUND_MSG)
@@ -387,7 +332,7 @@ impl InitState for InitProcess {
     fn kill(&mut self, sig: u32, all: bool) -> io::Result<()> {
         let _m = self.mu.lock().unwrap();
         let opts = KillOpts::new().all(all);
-        let res = executor::block_on(async {
+        executor::block_on(async {
             self.runtime
                 .as_ref()
                 .expect(RUNTIME_NOT_FOUND_MSG)
@@ -461,21 +406,6 @@ impl Process for InitProcess {
         self.state = ProcessState::Stopped;
         Ok(())
     }
-
-    // fn wait(&mut self) -> io::Result<()> {
-    //     // FIXME: Might be ugly hack
-    //     debug_log!("InitProcess::wait pid={}", self.pid);
-    //     loop {
-    //         match wait::waitpid(Pid::from_raw(self.pid as i32), None) {
-    //             Ok(WaitStatus::Exited(_, status)) => {
-    //                 InitState::set_exited(self, status as isize);
-    //                 return Ok(());
-    //             }
-    //             Err(e) => return Err(io::Error::from_raw_os_error(e as i32)),
-    //             _ => {}
-    //         }
-    //     }
-    // }
 
     fn start(&mut self) -> io::Result<()> {
         InitState::start(self)

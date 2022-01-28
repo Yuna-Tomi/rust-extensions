@@ -73,3 +73,17 @@ pub struct ExecConfig {
 
 // checkpoint is not supported now
 // pub struct ChecoutConfig {}
+
+#[derive(Debug, Clone, Default)]
+pub struct StdioConfig {
+    pub stdin: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub terminal: bool,
+}
+
+impl StdioConfig {
+    pub fn is_null(&self) -> bool {
+        self.stdin == "" && self.stdout == "" && self.stderr == ""
+    }
+}

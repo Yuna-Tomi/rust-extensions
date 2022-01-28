@@ -13,7 +13,10 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 */
+
+
 use super::fifo::{self, Fifo};
+use super::config::StdioConfig;
 use containerd_runc_rust as runc;
 use nix::fcntl::{self, OFlag};
 use nix::sys::stat::Mode;
@@ -34,22 +37,7 @@ use url::{ParseError, Url};
 use crate::dbg::*;
 
 #[derive(Debug, Clone, Default)]
-pub struct StdioConfig {
-    pub stdin: String,
-    pub stdout: String,
-    pub stderr: String,
-    pub terminal: bool,
-}
-
-impl StdioConfig {
-    pub fn is_null(&self) -> bool {
-        self.stdin == "" && self.stdout == "" && self.stderr == ""
-    }
-}
-
-#[derive(Debug, Clone, Default)]
 pub struct ProcessIO {
-    // io: runc::IO,
     pub io: Option<Box<dyn RuncIO>>,
     pub uri: Option<Url>,
     pub copy: bool,
@@ -105,7 +93,7 @@ impl ProcessIO {
                     stdio,
                 })
             }
-            "binjary" => {
+            "binary" => {
                 // FIXME: appropriate binary io
                 panic!("unimplemented");
                 // Ok(Self {
@@ -236,17 +224,6 @@ const FIFO: [&str; 2] = ["stdout", "stderr"];
 
 async fn copy_pipes(io: Box<dyn RuncIO>, stdio: &StdioConfig) -> std::io::Result<()> {
     let io_files = vec![io.stdout(), io.stderr()];
-    /* ------------------------------ DEBUG ------------------------------ */
-    let f = unsafe { tokio::fs::File::from_raw_fd(io.stdin().unwrap()) };
-    debug_log!("stdin pipe: {:?}", f);
-    std::mem::forget(f);
-    let f = unsafe { tokio::fs::File::from_raw_fd(io_files[0].unwrap()) };
-    debug_log!("stdout pipe: {:?}", f);
-    std::mem::forget(f);
-    let f = unsafe { tokio::fs::File::from_raw_fd(io_files[1].unwrap()) };
-    debug_log!("stderr pipe: {:?}", f);
-    std::mem::forget(f);
-    /* ------------------------------ DEBUG ------------------------------ */
 
     // debug_log!("io files: {:?}", io_files);
     let out_err = vec![stdio.stdout.clone(), stdio.stderr.clone()];
