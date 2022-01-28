@@ -161,6 +161,8 @@ impl InitProcess {
             debug_log!("prepare IO...");
             let proc_io = ProcessIO::new(&self.id, self.io_uid, self.io_gid, self.stdio.clone())?;
             debug_log!("IO prepared: {:?}", proc_io);
+            // ugly hack: it' not good to clone RuncIO,
+            // because dropping instance can cause unexpected close
             opts = opts.io(proc_io.io().unwrap());
             let _ = self.io.get_or_insert(proc_io);
         }
@@ -170,22 +172,9 @@ impl InitProcess {
         debug_log!("    opts={:?}", opts);
         let (tx, rx) = oneshot::channel::<()>();
         self.wait_block = Some(rx);
-        /* debug ------------- */
-        let _out = std::process::Command::new("ls")
-            .arg("-l")
-            .arg("/proc/self/fd")
-            .output()
-            .map_err(|e| {
-                debug_log!("{}", e);
-                e
-            })
-            .unwrap();
-        let _out = String::from_utf8(_out.stdout).unwrap();
-        let _out = _out.split("\n").collect::<Vec<&str>>();
-        debug_log!("fds: {:#?}", _out);
-        /* debug ------------- */
 
-        self.create_and_io_preparation(config, opts);
+        debug_log!("fds: {:#?}", check_fds!());
+        self.create_and_io_preparation(config, opts)?;
         tx.send(()).unwrap(); // notify successfully created.
 
         let mut pid_f = OpenOptions::new().read(true).open(&pid_file)?;
@@ -211,16 +200,30 @@ impl InitProcess {
             .build()?;
 
         rt.block_on(async {
+            let CreateConfig {
+                id,
+                bundle,
+                terminal,
+                stdin,
+                ..
+            } = config;
+
             let runtime = self.runtime.take().expect(RUNTIME_NOT_FOUND_MSG);
-            let create = runtime.create(config.id.as_str(), &config.bundle, Some(&opts));
+            let create = tokio::spawn(async move {
+                runtime.create(&id, bundle, Some(&opts)).await?;
+                // ugly hack to workaround
+                Ok::<RuncAsyncClient, runc::error::Error>(runtime)
+            });
+
             debug_log!("create spawned");
             debug_log!("lets start async io preparation!");
 
             // this task corresponds to openStdin() in Go
             // see https://github.com/containerd/containerd/blob/main/pkg/process/init.go#L178
             debug_log!("spawn open_stdin....");
-            let stdin = config.stdin;
             let open_stdin = tokio::spawn(async move {
+                // skip stdin setting for debug
+                return Ok(None);
                 if stdin != "" {
                     debug_log!("Open stdin...");
                     let f = Fifo::open(&stdin, OFlag::O_WRONLY | OFlag::O_NONBLOCK, 0).await?;
@@ -236,9 +239,14 @@ impl InitProcess {
             // https://github.com/containerd/containerd/blob/main/pkg/process/init.go#L155
             debug_log!("spawn copy_io....");
             let proc_io = self.io.take().expect("processIO is required to set before");
-            let use_socket = config.terminal;
+
+            debug_log!("just checking fds... {:#?}", check_fds!());
+
             let copy_io = tokio::spawn(async move {
-                if use_socket {
+                if proc_io.copy {
+                    return Ok(proc_io);
+                }
+                if terminal {
                     // socket exists
                     panic!("unimplemented");
                     // self.copy_console()?;
@@ -252,15 +260,21 @@ impl InitProcess {
             });
             debug_log!("spawned copy_io");
 
-            create.await.map_err(|e| {
-                log::error!("{}", e);
-                std::io::ErrorKind::Other
-            })?;
             if let Some(f) = open_stdin.await?? {
                 let _ = self.stdin.get_or_insert(f);
             }
-            let _ = self.runtime.get_or_insert(runtime);
             let _ = self.io.get_or_insert(copy_io.await??);
+            debug_log!("pipe copy ok!");
+
+            let runtime = create.await.map_err(|e| {
+                debug_log!("runtime create failed.");
+                e
+            })?
+                .map_err(|e| {
+                debug_log!("{}", e);
+                std::io::ErrorKind::Other
+            })?;
+            let _ = self.runtime.get_or_insert(runtime);
             Ok::<(), std::io::Error>(())
         })
     }

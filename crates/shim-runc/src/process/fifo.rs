@@ -99,24 +99,13 @@ impl Fifo {
         opts.mode(0).custom_flags(flag.bits());
         // debug_log!("option set: {:?}", opts);
 
-        /* DEBUG ------------------------------------------------------------------ */
-        let _out = std::process::Command::new("ls")
-            .arg("-l")
-            .arg("/proc/self/fd")
-            .output().map_err(|e| {
-                debug_log!("{}", e);
-                e
-            })?;
-        let _out = String::from_utf8(_out.stdout).unwrap();
-        let _out = _out.split("\n").collect::<Vec<&str>>();
         debug_log!("Access fifo: path={:?}, flag={:?}", path, flag);
-        debug_log!("fds: {:#?}", _out);
-        /* DEBUG ------------------------------------------------------------------ */
-
         let file = opts.open(&path).await.map_err(|e| {
             debug_log!("fifo access open failed: {}", e);
             e
         })?;
+        debug_log!("fifo accessed: path={:?} fds={:#?}, file={:?}", path, check_fds!(), file);
+
         // let close_task = async {};
         // tokio::task::spawn(async {}).await?;
 

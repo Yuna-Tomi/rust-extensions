@@ -28,23 +28,35 @@ use crate::dbg::*;
 // Alternatively, caller of start() and wait() have to prepare channel
 #[async_trait]
 pub trait ProcessMonitor {
-    /// cmd is mutable reference, allowing caller to choose [`std::mem::forget`] about resource
+    /// Caller cand choose [`std::mem::forget`] about resource
     /// associated to that command, e.g. file descriptors.
     async fn start(
         &self,
-        cmd: &mut tokio::process::Command,
+        mut cmd: tokio::process::Command,
         tx: Sender<Exit>,
+        forget: bool,
     ) -> std::io::Result<Output> {
-        let chi = cmd.spawn()?;
-        let pid = chi.id().unwrap();
+        debug_log!("spawn command... {:?}", cmd);
+        let chi = cmd.spawn().map_err(|e| {
+            debug_log!("{}", e);
+            e
+        })?;
+        let pid = chi.id(); // this cause panic, because tokio::process::Child returns None after child is polled to completion.
+        debug_log!("command spawned {:?}", cmd);
         let out = chi.wait_with_output().await?;
         let ts = Utc::now();
         match tx.send(Exit {
             ts,
-            pid,
+            pid, 
             status: out.status.code().unwrap(),
         }) {
-            Ok(_) => Ok(out),
+            Ok(_) => {
+                debug_log!("command and notification succeeded: {:?}", cmd);
+                if forget {
+                    std::mem::forget(cmd);
+                }
+                Ok(out)
+            }
             Err(e) => {
                 error!("command {:?} exited but receiver dropped.", cmd);
                 error!("couldn't send messages: {:?}", e);
@@ -53,6 +65,7 @@ pub trait ProcessMonitor {
         }
     }
     async fn wait(&self, rx: Receiver<Exit>) -> std::io::Result<Exit> {
+        debug_log!("waiting...");
         rx.await.map_err(|e| {
             error!("sender dropped.");
             std::io::Error::from(std::io::ErrorKind::BrokenPipe)
@@ -74,6 +87,6 @@ impl DefaultMonitor {
 #[derive(Debug)]
 pub struct Exit {
     pub ts: DateTime<Utc>,
-    pub pid: u32,
+    pub pid: Option<u32>,
     pub status: i32,
 }

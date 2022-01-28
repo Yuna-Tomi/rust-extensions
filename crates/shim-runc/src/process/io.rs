@@ -17,7 +17,7 @@ use super::fifo::{self, Fifo};
 use containerd_runc_rust as runc;
 use nix::fcntl::{self, OFlag};
 use nix::sys::stat::Mode;
-use runc::io::{IOOption, RuncIO, RuncPipedIO};
+use runc::io::{IOOption, RuncIO, RuncPipedIO, NullIO};
 use std::os::unix::prelude::FromRawFd;
 use std::path::Path;
 use std::pin::Pin;
@@ -50,10 +50,10 @@ impl StdioConfig {
 #[derive(Debug, Clone, Default)]
 pub struct ProcessIO {
     // io: runc::IO,
-    io: Option<Box<dyn RuncIO>>,
-    uri: Option<Url>,
-    copy: bool,
-    stdio: StdioConfig,
+    pub io: Option<Box<dyn RuncIO>>,
+    pub uri: Option<Url>,
+    pub copy: bool,
+    pub stdio: StdioConfig,
 }
 
 impl ProcessIO {
@@ -63,8 +63,17 @@ impl ProcessIO {
         io_gid: isize,
         stdio: StdioConfig,
     ) -> std::io::Result<Self> {
+        // Only NullIO is supported now.
+        return Ok(Self {
+            io: Some(Box::new(NullIO::new()?)),
+            copy: false,
+            stdio,
+            ..Default::default()
+        });
+
         if stdio.is_null() {
             return Ok(Self {
+                io: Some(Box::new(NullIO::new()?)),
                 copy: false,
                 stdio,
                 ..Default::default()
@@ -96,14 +105,15 @@ impl ProcessIO {
                     stdio,
                 })
             }
-            "binary" => {
-                Ok(Self {
-                    // FIXME: appropriate binary io
-                    io: Some(Box::new(BinaryIO::new("dummy")?) as Box<dyn RuncIO>),
-                    uri: Some(u),
-                    copy: false,
-                    stdio,
-                })
+            "binjary" => {
+                // FIXME: appropriate binary io
+                panic!("unimplemented");
+                // Ok(Self {
+                //     io: Some(Box::new(BinaryIO::new("dummy")?) as Box<dyn RuncIO>),
+                //     uri: Some(u),
+                //     copy: false,
+                //     stdio,
+                // })
             }
             "file" => {
                 let path = Path::new(u.path());
@@ -226,6 +236,18 @@ const FIFO: [&str; 2] = ["stdout", "stderr"];
 
 async fn copy_pipes(io: Box<dyn RuncIO>, stdio: &StdioConfig) -> std::io::Result<()> {
     let io_files = vec![io.stdout(), io.stderr()];
+    /* ------------------------------ DEBUG ------------------------------ */
+    let f = unsafe { tokio::fs::File::from_raw_fd(io.stdin().unwrap()) };
+    debug_log!("stdin pipe: {:?}", f);
+    std::mem::forget(f);
+    let f = unsafe { tokio::fs::File::from_raw_fd(io_files[0].unwrap()) };
+    debug_log!("stdout pipe: {:?}", f);
+    std::mem::forget(f);
+    let f = unsafe { tokio::fs::File::from_raw_fd(io_files[1].unwrap()) };
+    debug_log!("stderr pipe: {:?}", f);
+    std::mem::forget(f);
+    /* ------------------------------ DEBUG ------------------------------ */
+
     // debug_log!("io files: {:?}", io_files);
     let out_err = vec![stdio.stdout.clone(), stdio.stderr.clone()];
     let mut same_file = None;
@@ -241,8 +263,7 @@ async fn copy_pipes(io: Box<dyn RuncIO>, stdio: &StdioConfig) -> std::io::Result
             match reader_fd {
                 Some(f) => {
                     let f = unsafe { tokio::fs::File::from_raw_fd(f) };
-                    debug_log!("{} readfile: {:?}", ix, f);
-                    debug_log!("{} fifo: {:?}", ix, r);
+                    debug_log!("{}\nreadfile: {:?}\nfifo: {:?}", ix, f, r);
                     let mut reader = BufReader::new(f);
                     let x = tokio::io::copy(&mut reader, &mut *writer).await?;
                     debug_log!("{} copy: {} bytes", FIFO[ix], x);
@@ -311,12 +332,14 @@ async fn copy_pipes(io: Box<dyn RuncIO>, stdio: &StdioConfig) -> std::io::Result
         let f = Fifo::open(&stdio.stdin, OFlag::O_RDONLY | OFlag::O_NONBLOCK, 0).await?;
         let copy_buf = async move {
             let stdin = unsafe { tokio::fs::File::from_raw_fd(io.stdin().unwrap()) };
-            debug_log!("stdin write end: {:?}", stdin);
-            debug_log!("stdin read end: {:?}", f);
+            debug_log!("stdin write end: {:?}\nstdin read end: {:?}", stdin, f);
             let mut writer = BufWriter::new(stdin);
             let mut reader = BufReader::new(f);
-            debug_log!("stdin writer buffer: {:?}", writer.buffer());
-            debug_log!("stdin reader buffer: {:?}", reader.buffer());
+            debug_log!(
+                "stdin writer buffer: {:?}\nstdin reader buffer: {:?}",
+                writer.buffer(),
+                reader.buffer(),
+            );
             match tokio::io::copy(&mut reader, &mut writer).await {
                 Ok(x) => {
                     debug_log!("stdin copy: {} bytes", x);

@@ -503,10 +503,10 @@ pub struct RuncAsyncClient(runc::Runc);
 
 impl RuncAsyncClient {
     // DefaultMonitor never have to be mutable, then just use const one.
-    const MONITOR: DefaultMonitor = DefaultMonitor::new();
 
     /// Create a new runc client from the supplied configuration
     pub fn from_config(config: RuncConfig) -> Result<Self> {
+        debug_log!("build async cliend...");
         config.build_async()
     }
 
@@ -567,47 +567,31 @@ impl RuncAsyncClient {
         let (tx, rx) = tokio::sync::oneshot::channel::<Exit>();
 
         debug_log!("command launch {:?}", cmd);
-        let start = Self::MONITOR.start(&mut cmd, tx);
-        let wait = Self::MONITOR.wait(rx);
+        let monitor = DefaultMonitor::new();
+        let start = monitor.start(cmd, tx, forget);
+        let wait = monitor.wait(rx);
 
         let out = start.await.map_err(Error::InvalidCommand)?;
+        debug_log!("got output");
         let Exit { pid, status, .. } = wait.await.map_err(Error::InvalidCommand)?;
         let status = out.status;
 
         // ugly hack to work around
         let stdout = String::from_utf8(out.stdout).unwrap();
         let stderr = String::from_utf8(out.stderr).unwrap();
-        if forget {
-            // reserve fds of pipes for after use
-            // this forget surely enables fds outside this function
-            std::mem::forget(cmd);
-        }
 
-        /* debug ------------- */
-        let out = std::process::Command::new("ls")
-            .arg("-l")
-            .arg("/proc/self/fd")
-            .output()
-            .map_err(|e| {
-                debug_log!("{}", e);
-                e
-            })
-            .unwrap();
-        let out = String::from_utf8(out.stdout).unwrap();
-        let out = out.split("\n").collect::<Vec<&str>>();
-        debug_log!("fds: {:#?}", out);
-        /* debug ------------- */
+        debug_log!("fds: {:#?}", check_fds!());
 
         if status.success() {
             if combined_output {
                 Ok(RuncResponse {
-                    pid,
+                    pid: pid.unwrap_or_default(),
                     status,
                     output: stdout + stderr.as_str(),
                 })
             } else {
                 Ok(RuncResponse {
-                    pid,
+                    pid: pid.unwrap_or_default(),
                     status,
                     output: stdout,
                 })
@@ -653,28 +637,18 @@ impl RuncAsyncClient {
             Some(CreateOpts { io: Some(_io), .. }) => {
                 debug_log!("cmd: {:?}", cmd);
                 /* debug ------------- */
-                let _out = std::process::Command::new("ls")
-                    .arg("-l")
-                    .arg("/proc/self/fd")
-                    .output()
-                    .map_err(|e| {
-                        debug_log!("{}", e);
-                        e
-                    })
-                    .unwrap();
-                let _out = String::from_utf8(_out.stdout).unwrap();
-                let _out = _out.split("\n").collect::<Vec<&str>>();
-                debug_log!("fds: {:#?}", _out);
+                debug_log!("fds: {:#?}", check_fds!());
                 /* debug ------------- */
                 unsafe { _io.set_tk(&mut cmd) }
+                let monitor = DefaultMonitor::new();
                 let (tx, rx) = tokio::sync::oneshot::channel::<Exit>();
-                let start = Self::MONITOR.start(&mut cmd, tx);
-                let wait = Self::MONITOR.wait(rx);
+                let start = monitor.start(cmd, tx, true);
+                let wait = monitor.wait(rx);
+                debug_log!("create launched. waiting...");
                 let out = start.await.map_err(Error::InvalidCommand)?;
                 let Exit { status, .. } = wait.await.map_err(Error::InvalidCommand)?;
                 debug_log!("closing write end for stdout/err...");
                 unsafe { _io.close_after_start() }
-                std::mem::forget(cmd);
 
                 let stdout = String::from_utf8(out.stdout).unwrap();
                 let stderr = String::from_utf8(out.stderr).unwrap();
@@ -685,7 +659,6 @@ impl RuncAsyncClient {
                         stderr,
                     });
                 }
-
             }
             _ => {
                 let _ = self.launch(cmd, true, false).await?;

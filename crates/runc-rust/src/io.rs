@@ -14,6 +14,8 @@
    limitations under the license.
 */
 use dyn_clone::DynClone;
+use nix::fcntl::OFlag;
+use nix::sys::stat::Mode;
 use nix::unistd::{Gid, Uid};
 use std::fmt::{self, Debug, Formatter};
 use std::fs::File;
@@ -26,18 +28,35 @@ use crate::dbg::*;
 /// Users have to [`std::mem::forget()`] to prevent from closing fds when this return value drops.
 /// Especially, in such situation, you have to [`std::mem::forget()`] the [`std::process::Command`] you passed to the [`set()`].
 pub trait RuncIO: DynClone + Sync + Send {
-    fn stdin(&self) -> Option<RawFd>;
-    fn stdout(&self) -> Option<RawFd>;
-    fn stderr(&self) -> Option<RawFd>;
-    fn close(&mut self);
+    fn stdin(&self) -> Option<RawFd> {
+        None
+    }
+    fn stdout(&self) -> Option<RawFd> {
+        None
+    }
+    fn stderr(&self) -> Option<RawFd> {
+        None
+    }
+
+    fn close(&mut self) {
+        debug_log!("close unimplemented!");
+        panic!("close unimplemented!");
+    }
+
     unsafe fn set(&self, cmd: &mut Command) {
+        debug_log!("set unimplemented!");
         panic!("set unimplemented!");
     }
+
+    // tokio version of set()
     unsafe fn set_tk(&self, cmd: &mut tokio::process::Command) {
+        debug_log!("set_tk unimplemented!");
         panic!("set_tk unimplemented!");
     }
+
     unsafe fn close_after_start(&self) {
-        panic!("close_agter_start unimplemented!");
+        debug_log!("close_after_start unimplemented!");
+        panic!("close_after_start unimplemented!");
     }
 }
 
@@ -194,6 +213,52 @@ impl RuncIO for RuncPipedIO {
     }
 }
 
+// IO setup for /dev/null use with runc
+#[derive(Debug, Clone, Default)]
+pub struct NullIO {
+    dev_null_fd: RawFd,
+}
+
+impl NullIO {
+    pub fn new() -> std::io::Result<Self> {
+        let dev_null_fd = nix::fcntl::open("/dev/null", OFlag::O_RDONLY, Mode::empty())?;
+        Ok(Self { dev_null_fd })
+    }
+}
+
+impl RuncIO for NullIO {
+    unsafe fn set(&self, cmd: &mut Command) {
+        // let f = File::from_raw_fd(self.dev_null_fd);
+        // debug_log!("set write end for stdout: {:?}", f);
+        // cmd.stdout(f);
+        // let f = File::from_raw_fd(self.dev_null_fd);
+        // debug_log!("set write end for stderr: {:?}", f);
+        // cmd.stderr(f);
+
+        cmd.stdout(Stdio::null());
+        cmd.stderr(Stdio::null());
+    }
+
+    unsafe fn set_tk(&self, cmd: &mut tokio::process::Command) {
+        // let f = File::from_raw_fd(self.dev_null_fd);
+        // debug_log!("set write end for stdout: {:?}", f);
+        // cmd.stdout(f);
+        // let f = File::from_raw_fd(self.dev_null_fd);
+        // debug_log!("set write end for stderr: {:?}", f);
+        // cmd.stderr(f);
+        cmd.stdout(Stdio::null());
+        cmd.stderr(Stdio::null());
+    }
+
+    fn close(&mut self) {
+        let _ = unsafe { File::from_raw_fd(self.dev_null_fd) };
+    }
+
+    unsafe fn close_after_start(&self) {
+        drop(File::from_raw_fd(self.dev_null_fd));
+    }    
+}
+
 #[derive(Debug, Clone)]
 pub struct Pipe {
     // might be ugly hack: use rawfd, insted of file to allow clone
@@ -204,16 +269,16 @@ pub struct Pipe {
 impl Pipe {
     pub fn new() -> std::io::Result<Self> {
         let (read_fd, write_fd) = nix::unistd::pipe()?;
-        // unsafe {
-        //     let fr = File::from_raw_fd(read_fd);
-        //     let fw = File::from_raw_fd(write_fd);
-        //     debug_log!("read end for pipe: {:?}", fr);
-        //     debug_log!("write end for pipe: {:?}", fw);
-        //     std::mem::forget(fr);
-        //     std::mem::forget(fw);
-        //     std::mem::forget(File::from_raw_fd(read_fd));
-        //     std::mem::forget(File::from_raw_fd(write_fd));
-        // }
+        unsafe {
+            let fr = File::from_raw_fd(read_fd);
+            let fw = File::from_raw_fd(write_fd);
+            debug_log!("read end for pipe: {:?}", fr);
+            debug_log!("write end for pipe: {:?}", fw);
+            std::mem::forget(fr);
+            std::mem::forget(fw);
+            //     std::mem::forget(File::from_raw_fd(read_fd));
+            //     std::mem::forget(File::from_raw_fd(write_fd));
+        }
         Ok(Self { read_fd, write_fd })
     }
 
@@ -239,8 +304,8 @@ impl Pipe {
     }
 }
 
-impl Drop for Pipe {
-    fn drop(&mut self) {
-        unsafe { self.close() }
-    }
-}
+// impl Drop for Pipe {
+//     fn drop(&mut self) {
+//         unsafe { self.close() }
+//     }
+// }

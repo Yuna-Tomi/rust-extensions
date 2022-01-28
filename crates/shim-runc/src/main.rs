@@ -32,7 +32,7 @@ pub mod v2 {
 
 pub mod dbg {
     pub use crate::debug::*;
-    pub use crate::debug_log;
+    pub use crate::{check_fds, debug_log};
     pub use std::io::Write as DbgWrite;
 }
 use dbg::*;
