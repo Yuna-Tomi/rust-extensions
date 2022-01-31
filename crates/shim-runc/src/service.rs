@@ -45,8 +45,6 @@ use shim::{api, ExitSignal, TtrpcContext, TtrpcResult};
 use sys_mount::UnmountFlags;
 use ttrpc::{Code, Status};
 
-use crate::dbg::*;
-
 // group labels specifies how the shim groups services.
 // currently supports a runc.v2 specific .group label and the
 // standard k8s pod label.  Order matters in this list
@@ -98,7 +96,7 @@ impl shim::Shim for Service {
         let id = _id.to_string();
         let namespace = _namespace.to_string();
         let exit = ExitSignal::default();
-        debug_log!("shim service successfully created.");
+
         Self {
             runtime_id,
             id,
@@ -110,7 +108,7 @@ impl shim::Shim for Service {
     #[cfg(target_os = "linux")]
     fn start_shim(&mut self, opts: shim::StartOpts) -> Result<String, shim::Error> {
         let address = shim::spawn(opts, Vec::new())?;
-        debug_log!("shim successfully spawned.");
+
         Ok(address)
     }
 
@@ -133,7 +131,9 @@ impl shim::Shim for Service {
     /// Cleaning up all containers in blocking way, when `shim delete` is invoked.
     fn delete_shim(&mut self) -> Result<DeleteResponse, Self::Error> {
         let cwd = env::current_dir()?;
-        let parent = cwd.parent().expect("Invalid: shim running on root directory.");
+        let parent = cwd
+            .parent()
+            .expect("Invalid: shim running on root directory.");
         let path = parent.join(&self.id);
         let opts =
             container::read_options(&path).map_err(|e| Self::Error::Delete(e.to_string()))?;
@@ -173,17 +173,14 @@ impl shim::Task for Service {
         _ctx: &ttrpc::TtrpcContext,
         _req: CreateTaskRequest,
     ) -> ttrpc::Result<CreateTaskResponse> {
-        debug_log!("TTRPC call: create\nid={}", _req.id);
-
         let id = _req.id.clone();
         let unknown_fields = _req.unknown_fields.clone();
         let cached_size = _req.cached_size.clone();
         // FIXME: error handling
-        debug_log!("call Container::new()");
+
         let container = match Container::new(_req) {
             Ok(c) => c,
             Err(e) => {
-                debug_log!("container create failed: {:?}", e);
                 return Err(ttrpc::Error::Others(format!(
                     "container create failed: id={}, err={}",
                     id, e
@@ -201,7 +198,6 @@ impl shim::Task for Service {
             let _ = c.insert(id, container);
         }
 
-        debug_log!("TTRPC call succeeded: create\npid={}", pid);
         Ok(CreateTaskResponse {
             pid,
             unknown_fields,
@@ -214,13 +210,7 @@ impl shim::Task for Service {
         _ctx: &ttrpc::TtrpcContext,
         _req: StartRequest,
     ) -> ttrpc::Result<StartResponse> {
-        debug_log!(
-            "TTRPC call: start\nid={}, exec_id={}",
-            _req.get_id(),
-            _req.get_exec_id()
-        );
         let mut c = CONTAINERS.write().unwrap();
-        debug_log!("request: id={}", _req.get_id());
 
         let container = c.get_mut(_req.get_id()).ok_or_else(|| {
             ttrpc::Error::RpcStatus(Status {
@@ -232,7 +222,6 @@ impl shim::Task for Service {
             })
         })?;
 
-        debug_log!("call Container::start()");
         let pid = container.start(&_req).map_err(|_|
             // FIXME: appropriate error mapping
             ttrpc::error::Error::RpcStatus(Status {
@@ -243,7 +232,6 @@ impl shim::Task for Service {
                 cached_size: _req.cached_size.clone(),
         }))?;
 
-        debug_log!("TTRPC call succeeded: start");
         Ok(StartResponse {
             pid: pid as u32,
             unknown_fields: _req.unknown_fields,
@@ -256,8 +244,6 @@ impl shim::Task for Service {
         _ctx: &::ttrpc::TtrpcContext,
         _req: ExecProcessRequest,
     ) -> ::ttrpc::Result<Empty> {
-        debug_log!("TTRPC call: exec");
-        debug_log!("request: id={}", _req.get_id());
         Err(::ttrpc::Error::RpcStatus(::ttrpc::get_status(
             ::ttrpc::Code::NOT_FOUND,
             "/containerd.task.v2.Task/Exec is not supported".to_string(),
@@ -269,12 +255,6 @@ impl shim::Task for Service {
         _ctx: &ttrpc::TtrpcContext,
         _req: StateRequest,
     ) -> ttrpc::Result<StateResponse> {
-        debug_log!(
-            "TTRPC call: state\nid={}, exec_id={}",
-            _req.get_id(),
-            _req.get_exec_id()
-        );
-
         let c = CONTAINERS.write().unwrap();
         let container = c.get(_req.get_id()).ok_or_else(|| {
             ttrpc::Error::RpcStatus(Status {
@@ -309,12 +289,6 @@ impl shim::Task for Service {
         };
 
         let stdio = p.stdio();
-        debug_log!(
-            "TTRPC call succeeded: state\nid={}, exec_id={}, state={:?}",
-            _req.get_id(),
-            _req.get_exec_id(),
-            status,
-        );
         Ok(StateResponse {
             id: _req.exec_id,
             bundle: p.bundle.clone(),
@@ -332,12 +306,6 @@ impl shim::Task for Service {
     }
 
     fn wait(&self, _ctx: &ttrpc::TtrpcContext, _req: WaitRequest) -> ttrpc::Result<WaitResponse> {
-        debug_log!(
-            "TTRPC call: wait\nid={}, exec_id={}",
-            _req.get_id(),
-            _req.get_exec_id()
-        );
-
         let mut c = CONTAINERS.write().unwrap();
         let container = c.get_mut(_req.get_id()).ok_or_else(|| {
             ttrpc::Error::RpcStatus(Status {
@@ -360,7 +328,6 @@ impl shim::Task for Service {
             })
         })?;
 
-        debug_log!("call InitProcess::wait");
         p.wait().map_err(|e| {
             ttrpc::Error::RpcStatus(Status {
                 code: Code::NOT_FOUND,
@@ -372,7 +339,7 @@ impl shim::Task for Service {
         })?;
 
         // Might be ugly hack
-        debug_log!("InitProcess::wait succeeded.");
+
         let exited_at = match p.exited_at() {
             Some(t) => Some(Timestamp {
                 // nanos: t.timestamp_nanos() as i32, // ugly hack
@@ -381,11 +348,6 @@ impl shim::Task for Service {
             None => None,
         };
 
-        debug_log!(
-            "TTRPC call: wait succeeded \nid={}, exec_id={}",
-            _req.get_id(),
-            _req.get_exec_id()
-        );
         Ok(WaitResponse {
             exit_status: p.exit_status() as u32,
             exited_at: SingularPtrField::from_option(exited_at),
@@ -395,9 +357,6 @@ impl shim::Task for Service {
     }
 
     fn kill(&self, _ctx: &ttrpc::TtrpcContext, _req: KillRequest) -> ttrpc::Result<Empty> {
-        debug_log!("TTRPC call: kill");
-        debug_log!("request: id={}", _req.get_id());
-
         let mut c = CONTAINERS.write().unwrap();
         let container = c.get_mut(_req.get_id()).ok_or_else(|| {
             ttrpc::Error::RpcStatus(Status {
@@ -419,7 +378,6 @@ impl shim::Task for Service {
             })
         })?;
 
-        debug_log!("TTRPC succeeded: kill");
         Ok(containerd_shim_protos::shim::empty::Empty {
             unknown_fields: _req.unknown_fields,
             cached_size: _req.cached_size,
@@ -431,9 +389,6 @@ impl shim::Task for Service {
         _ctx: &ttrpc::TtrpcContext,
         _req: DeleteRequest,
     ) -> ttrpc::Result<DeleteResponse> {
-        debug_log!("TTRPC call: delete");
-        debug_log!("request: id={}", _req.get_id());
-
         let mut c = CONTAINERS.write().unwrap();
         let container = c.get_mut(_req.get_id()).ok_or_else(|| {
             ttrpc::Error::RpcStatus(Status {
@@ -447,7 +402,6 @@ impl shim::Task for Service {
 
         match container.delete(&_req) {
             Ok((pid, exit_status, exited_at)) => {
-                debug_log!("TTRPC call succeeded: delete");
                 // Might be ugly hack
                 let exited_at = match exited_at {
                     Some(t) => Some(Timestamp {

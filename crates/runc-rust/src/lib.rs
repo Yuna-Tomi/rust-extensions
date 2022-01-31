@@ -45,17 +45,13 @@ use crate::utils::{JSON, TEXT};
 use std::fmt::{self, Display};
 use std::io::Write;
 use std::path::Path;
-use std::process::{Child, ExitStatus, Output, Stdio};
+use std::process::{ExitStatus, Output, Stdio};
 use std::time::Duration;
 use tempfile::NamedTempFile;
-use tokio::time;
-
-use dbg::*;
 
 // suspended for difficulties
 // pub mod console;
 pub mod container;
-mod debug;
 pub mod error;
 pub mod events;
 pub mod io;
@@ -64,11 +60,6 @@ pub mod options;
 mod runc;
 pub mod specs;
 mod utils;
-mod dbg {
-    pub use crate::debug::*;
-    pub use crate::debug_log;
-    pub use std::io::Write as DbgWrite;
-}
 
 type Result<T> = std::result::Result<T, crate::error::Error>;
 
@@ -246,7 +237,7 @@ impl RuncClient {
     ) -> Result<RuncResponse> {
         let child = cmd.spawn().map_err(Error::ProcessSpawnFailed)?;
         let pid = child.id();
-        debug_log!("command launch {:?}", cmd);
+        
         let result = child.wait_with_output().map_err(Error::InvalidCommand)?;
         let status = result.status;
         let stdout = String::from_utf8(result.stdout).unwrap();
@@ -295,14 +286,14 @@ impl RuncClient {
             args.append(&mut opts.args()?);
         }
         args.push(id.to_string());
-        debug_log!("set command...");
+        
         let mut cmd = self.command(&args)?;
-        debug_log!("command is set");
+        
         match opts {
             Some(CreateOpts { io: Some(_io), .. }) => unsafe {
                 _io.set(&mut cmd);
                 let res = self.launch(cmd, true, true)?;
-                debug_log!("closing write end for stdout/err...");
+                
                 _io.close_after_start();
                 Ok(res)
             },
@@ -422,9 +413,9 @@ impl RuncClient {
         }
         args.push(utils::abs_string(bundle)?);
         args.push(id.to_string());
-        debug_log!("set command...");
+        
         let mut cmd = self.command(&args)?;
-        debug_log!("command is set");
+        
         let forget = match opts {
             Some(CreateOpts { io: Some(_io), .. }) => {
                 unsafe { _io.set(&mut cmd) }
@@ -440,7 +431,7 @@ impl RuncClient {
     /// Start an already created container
     pub fn start(&self, id: &str) -> Result<RuncResponse> {
         let args = ["start".to_string(), id.to_string()];
-        debug_log!("start: launch...");
+        
         self.launch(self.command(&args)?, true, false)
     }
 
@@ -499,13 +490,13 @@ const MONITOR: DefaultMonitor = DefaultMonitor::new();
 impl RuncAsyncClient {
     /// Create a new runc client from the supplied configuration
     pub fn from_config(config: RuncConfig) -> Result<Self> {
-        // debug_log!("build async client...");
+        
         config.build_async()
     }
 
     #[cfg(target_os = "linux")]
     pub fn command(&self, args: &[String]) -> Result<tokio::process::Command> {
-        debug_log!("command setting...");
+        
         let args = [&self.0.args()?, args].concat();
         let mut cmd = tokio::process::Command::new(&self.0.command);
         cmd.stdin(Stdio::null())
@@ -521,7 +512,7 @@ impl RuncAsyncClient {
         combined_output: bool,
         forget: bool,
     ) -> Result<RuncResponse> {
-        debug_log! {"launch called."};
+        
         let (tx, rx) = tokio::sync::oneshot::channel::<Exit>();
         let start = MONITOR.start(cmd, tx, forget);
         let wait = MONITOR.wait(rx);
@@ -587,10 +578,10 @@ impl RuncAsyncClient {
         }
         args.push(id.to_string());
         let mut cmd = self.command(&args)?;
-        debug_log!("command is...{:?}", cmd);
+        
         match opts {
             Some(CreateOpts { io: Some(_io), .. }) => {
-                debug_log!("io setting...");
+                
                 unsafe { _io.set_tk(&mut cmd) }
                 let (tx, rx) = tokio::sync::oneshot::channel::<Exit>();
                 let start = MONITOR.start(cmd, tx, true);
@@ -651,7 +642,7 @@ impl RuncAsyncClient {
         }
         args.push(id.to_string());
         args.push(sig.to_string());
-        debug_log!("kill: args={:?}", args);
+        
         let _ = self.launch(self.command(&args)?, true, false).await?;
         Ok(())
     }

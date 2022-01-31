@@ -37,8 +37,6 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
-use crate::dbg::*;
-
 const RUNTIME_NOT_FOUND_MSG: &str = "runtime not found, should be set";
 
 /// Init process for a container
@@ -208,14 +206,8 @@ impl InitProcess {
 
         create
             .await
-            .map_err(|e| {
-                debug_log!("runtime create failed: {:#?}", e);
-                e
-            })?
-            .map_err(|e| {
-                debug_log!("{}", e);
-                std::io::ErrorKind::Other
-            })?;
+            .map_err(|e| e)?
+            .map_err(|e| std::io::ErrorKind::Other)?;
         Ok(())
     }
 

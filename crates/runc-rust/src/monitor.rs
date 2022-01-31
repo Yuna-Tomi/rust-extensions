@@ -20,7 +20,7 @@ use log::error;
 use std::process::Output;
 use tokio::sync::oneshot::{Receiver, Sender};
 
-use crate::dbg::*;
+
 use std::panic;
 
 // ProcessMonitor for handling runc process exit
@@ -37,15 +37,15 @@ pub trait ProcessMonitor {
         tx: Sender<Exit>,
         forget: bool,
     ) -> std::io::Result<Output> {
-        debug_log!("command spawn... {:?}", cmd);
+        
         let chi = cmd.spawn()?;
-        debug_log!("command spawned {:?}", chi);
+        
         let pid = chi
             .id()
             .expect("failed to take pid of the container process.");
-        debug_log!("command spawned {:?}, {:?}", chi, pid);
+        
         let out = chi.wait_with_output().await?;
-        debug_log!("command output {:?}", out);
+        
         let ts = Utc::now();
         match tx.send(Exit {
             ts,
@@ -53,7 +53,7 @@ pub trait ProcessMonitor {
             status: out.status.code().unwrap(),
         }) {
             Ok(_) => {
-                debug_log!("command and notification succeeded: {:?}", out);
+                
                 if forget {
                     std::mem::forget(cmd);
                 }

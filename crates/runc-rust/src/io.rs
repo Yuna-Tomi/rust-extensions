@@ -23,7 +23,7 @@ use std::os::unix::io::FromRawFd;
 use std::os::unix::prelude::RawFd;
 use std::process::{Command, Stdio};
 
-use crate::dbg::*;
+
 
 /// Users have to [`std::mem::forget()`] to prevent from closing fds when this return value drops.
 /// Especially, in such situation, you have to [`std::mem::forget()`] the [`std::process::Command`] you passed to the [`set()`].
@@ -39,23 +39,23 @@ pub trait RuncIO: DynClone + Sync + Send {
     }
 
     fn close(&mut self) {
-        debug_log!("close unimplemented!");
+        
         panic!("close unimplemented!");
     }
 
     unsafe fn set(&self, cmd: &mut Command) {
-        debug_log!("set unimplemented!");
+        
         panic!("set unimplemented!");
     }
 
     // tokio version of set()
     unsafe fn set_tk(&self, cmd: &mut tokio::process::Command) {
-        debug_log!("set_tk unimplemented!");
+        
         panic!("set_tk unimplemented!");
     }
 
     unsafe fn close_after_start(&self) {
-        debug_log!("close_after_start unimplemented!");
+        
         panic!("close_after_start unimplemented!");
     }
 }
@@ -169,17 +169,17 @@ impl RuncIO for RuncPipedIO {
     unsafe fn set(&self, cmd: &mut Command) {
         if let Some(stdin) = &self.stdin {
             let f = File::from_raw_fd(stdin.read_fd);
-            debug_log!("set read end for stdin: {:?}", f);
+            
             cmd.stdin(f);
         }
         if let Some(stdout) = &self.stdout {
             let f = File::from_raw_fd(stdout.write_fd);
-            debug_log!("set write end for stdout: {:?}", f);
+            
             cmd.stdout(f);
         }
         if let Some(stderr) = &self.stderr {
             let f = File::from_raw_fd(stderr.write_fd);
-            debug_log!("set write end for stderr: {:?}", f);
+            
             cmd.stderr(f);
         }
     }
@@ -187,17 +187,17 @@ impl RuncIO for RuncPipedIO {
     unsafe fn set_tk(&self, cmd: &mut tokio::process::Command) {
         if let Some(stdin) = &self.stdin {
             let f = File::from_raw_fd(stdin.read_fd);
-            debug_log!("set read end for stdin: {:?}", f);
+            
             cmd.stdin(f);
         }
         if let Some(stdout) = &self.stdout {
             let f = File::from_raw_fd(stdout.write_fd);
-            debug_log!("set write end for stdout: {:?}", f);
+            
             cmd.stdout(f);
         }
         if let Some(stderr) = &self.stderr {
             let f = File::from_raw_fd(stderr.write_fd);
-            debug_log!("set write end for stderr: {:?}", f);
+            
             cmd.stderr(f);
         }
     }
@@ -229,10 +229,10 @@ impl NullIO {
 impl RuncIO for NullIO {
     unsafe fn set(&self, cmd: &mut Command) {
         // let f = File::from_raw_fd(self.dev_null_fd);
-        // debug_log!("set write end for stdout: {:?}", f);
+        
         // cmd.stdout(f);
         // let f = File::from_raw_fd(self.dev_null_fd);
-        // debug_log!("set write end for stderr: {:?}", f);
+        
         // cmd.stderr(f);
 
         cmd.stdout(Stdio::null());
@@ -241,10 +241,10 @@ impl RuncIO for NullIO {
 
     unsafe fn set_tk(&self, cmd: &mut tokio::process::Command) {
         // let f = File::from_raw_fd(self.dev_null_fd);
-        // debug_log!("set write end for stdout: {:?}", f);
+        
         // cmd.stdout(f);
         // let f = File::from_raw_fd(self.dev_null_fd);
-        // debug_log!("set write end for stderr: {:?}", f);
+        
         // cmd.stderr(f);
         cmd.stdout(Stdio::null());
         cmd.stderr(Stdio::null());
@@ -272,8 +272,8 @@ impl Pipe {
         unsafe {
             let fr = File::from_raw_fd(read_fd);
             let fw = File::from_raw_fd(write_fd);
-            debug_log!("read end for pipe: {:?}", fr);
-            debug_log!("write end for pipe: {:?}", fw);
+            
+            
             std::mem::forget(fr);
             std::mem::forget(fw);
             //     std::mem::forget(File::from_raw_fd(read_fd));

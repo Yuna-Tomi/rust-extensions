@@ -26,8 +26,6 @@ use crate::process::config::MountConfig;
 use nix::libc::c_ulong;
 use nix::mount::{MntFlags, MsFlags};
 
-use crate::dbg::*;
-
 /// A mount helper, similar to Go version.
 pub struct MountUtil {
     /// Type specifies the host-specific of the mount.
@@ -83,14 +81,14 @@ where
         }
 
         // FIXME: appropriate mount point with chdir
-        debug_log!("mount: {:?}->{:?}", source, target.as_ref());
+
         let f = MountFlags::from_bits_truncate(oflags as u64);
         let _ = sys_mount::Mount::new(source, &target, mnt.mount_type.as_str(), f, Some(&data))?;
     }
 
     if flags & PTYPES != 0 {
         // change the propagation type.
-        debug_log!("change the propagation type.");
+
         let f = MountFlags::from_bits_truncate(
             flags & (PTYPES | MsFlags::MS_REC.bits() | MsFlags::MS_SILENT.bits()) as u64,
         );
@@ -99,7 +97,7 @@ where
 
     if oflags & BROFLAGS == BROFLAGS {
         // remount the bind to apply read only.
-        debug_log!("remount the bind to apply read only.");
+
         let f = MountFlags::from_bits_truncate((oflags | MsFlags::MS_REMOUNT.bits()) as u64);
         let _ = sys_mount::Mount::new("", &target, "", f, None)?;
     }

@@ -28,8 +28,6 @@ use std::pin::Pin;
 use std::task::Poll;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::dbg::*;
-
 #[derive(Debug)]
 pub struct Fifo {
     flag: OFlag,
@@ -81,7 +79,7 @@ impl Fifo {
         opts.mode(0).custom_flags(flag.bits());
 
         let file = opts.open(&path).await.map_err(|e| {
-            debug_log!("fifo access open failed: {}", e);
+            
             e
         })?;
 

@@ -35,16 +35,9 @@ use crate::process::{
 use crate::utils;
 pub use containerd_shim_protos as protos;
 use protobuf::Message;
-use protos::shim::{
-    empty::Empty,
-    shim::{
-        CreateTaskRequest, CreateTaskResponse, DeleteRequest, DeleteResponse, ExecProcessRequest,
-        ExecProcessResponse, KillRequest, StartRequest, StartResponse, StateRequest, StateResponse,
-    },
-};
+use protos::shim::shim::{CreateTaskRequest, DeleteRequest, KillRequest, StartRequest};
 
 // for debug
-use crate::dbg::*;
 
 const OPTIONS_FILENAME: &str = "options.json";
 
@@ -65,7 +58,7 @@ pub struct Container {
 impl Container {
     /// When this struct is created, container is ready to create.
     /// That means, mounting rootfs is done etc.
-    pub fn new(req: protos::shim::shim::CreateTaskRequest) -> io::Result<Self> {
+    pub fn new(req: CreateTaskRequest) -> io::Result<Self> {
         // FIXME
         let namespace = "default".to_string();
 
@@ -86,7 +79,7 @@ impl Container {
 
         let rootfs = if mounts.len() > 0 {
             let path = Path::new(&req.bundle).join("rootfs");
-            debug_log!("mkdir rootfs: {:?}", path);
+
             match unistd::mkdir(&path, stat::Mode::from_bits_truncate(0o711)) {
                 Ok(_) | Err(Errno::EEXIST) => {}
                 Err(e) => return Err(io::Error::from(e)),
@@ -95,7 +88,6 @@ impl Container {
         } else {
             PathBuf::new()
         };
-        debug_log!("mkdir succeeded! rootfs={:?}", rootfs);
 
         let config = CreateConfig {
             id: req.id.clone(),
@@ -113,28 +105,23 @@ impl Container {
         match write_options(&req.bundle, &opts) {
             Ok(_) => {}
             Err(e) => {
-                debug_log!("{}", e);
                 return Err(e);
             }
         }
 
-        debug_log!("write_runtime: {}", opts.binary_name);
         // For historical reason, we write binary name as well as the entire opts
         write_runtime(&req.bundle, &opts.binary_name)?;
 
         // split functionality in order to cleanup rootfs when error occurs after mount.
         Self::inner_new(&rootfs, req, namespace, opts, config, mounts).map_err(|e| {
-            debug_log!("error in Container::inner_new ... {}", e);
-            if let Err(_) = sys_mount::unmount(rootfs, UnmountFlags::empty()) {
-                debug_log!("failed to cleanup mounts.");
-            }
+            if let Err(_) = sys_mount::unmount(rootfs, UnmountFlags::empty()) {}
             e
         })
     }
 
     fn inner_new<R>(
         rootfs: R,
-        req: protos::shim::shim::CreateTaskRequest,
+        req: CreateTaskRequest,
         namespace: String,
         opts: Options,
         config: CreateConfig,
@@ -144,14 +131,12 @@ impl Container {
         R: AsRef<Path>,
     {
         for mnt in mounts {
-            debug_log!("call utils::mount: {:?}", mnt);
             utils::mount(mnt, &rootfs)?;
-            debug_log!("mount succeeded!");
         }
         let id = req.id.clone();
         let bundle = req.bundle.clone();
 
-        // debug_log!("call InitProcess::new: {:?}", bundle);
+        //
         let mut init = InitProcess::new(
             &bundle,
             Path::new(&bundle).join("work"),
@@ -161,11 +146,9 @@ impl Container {
             rootfs,
         )?;
 
-        debug_log!("call init create: {:?}", config);
         // create the init process
         init.create(config)?;
         let pid = init.pid();
-        debug_log!("init successfully created: pid={}", pid);
 
         if pid > 0 {
             // FIXME: setting config for cgroup
@@ -267,7 +250,7 @@ impl Container {
     /// Start a container process and return its pid
     pub fn start(&mut self, req: &StartRequest) -> Result<isize, Box<dyn std::error::Error>> {
         let p = self.process_mut(&req.id)?;
-        debug_log!("call InitProcess::start(): {:?}", p);
+
         p.start()?;
         Ok(p.pid())
     }
@@ -278,9 +261,8 @@ impl Container {
     ) -> io::Result<(isize, isize, Option<DateTime<Utc>>)> {
         {
             let p = self.process_mut(&req.exec_id)?;
-            debug_log!("call InitProcess::delete(): {:?}", p);
+
             p.delete()?;
-            debug_log!("InitProcess::delete() succeeded: {:?}", p);
         }
         if req.exec_id != "" {
             let p = self
