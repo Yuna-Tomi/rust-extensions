@@ -79,7 +79,7 @@ where
         // or remount with changed data
         let source = &mnt.source;
         if loop_setup {
-            debug_log!("loop device setup (would fail)");
+            unimplemented!()
         }
 
         // FIXME: appropriate mount point with chdir
@@ -196,9 +196,6 @@ where
         .root(root)
         .systemd_cgroup(systemd_cgroup);
 
-    // NOTE: this returns error only if the runc binary does not exists.
-
-    debug_log!("build runc client with config {:#?}", config);
     RuncClient::from_config(config)
 }
 
@@ -229,8 +226,5 @@ where
         .root(root)
         .systemd_cgroup(systemd_cgroup);
 
-    // NOTE: this returns error only if the runc binary does not exists.
-
-    debug_log!("build runc client with config {:#?}", config);
     RuncAsyncClient::from_config(config)
 }

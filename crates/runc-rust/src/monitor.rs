@@ -23,7 +23,6 @@ use tokio::sync::oneshot::{Receiver, Sender};
 use crate::dbg::*;
 use std::panic;
 
-
 // ProcessMonitor for handling runc process exit
 // Implementation is different from Go's, because if you return Sender in start() and want to
 // use it in wait(), then start and wait cannot be executed concurrently.
@@ -38,27 +37,23 @@ pub trait ProcessMonitor {
         tx: Sender<Exit>,
         forget: bool,
     ) -> std::io::Result<Output> {
-        debug_log!("spawn command... {:?}", cmd);
-
-        panic::set_hook(Box::new(|x| {
-            debug_log!("{}", x);
-            std::process::exit(1);
-        }));
-        let chi = cmd.spawn().map_err(|e| {
-            // debug_log!("{}", e);
-            e
-        })?;
-        let pid = chi.id().expect("failed to take pid of the container process.");
-        debug_log!("command spawned {:?}, {:?}", cmd, pid);
+        debug_log!("command spawn... {:?}", cmd);
+        let chi = cmd.spawn()?;
+        debug_log!("command spawned {:?}", chi);
+        let pid = chi
+            .id()
+            .expect("failed to take pid of the container process.");
+        debug_log!("command spawned {:?}, {:?}", chi, pid);
         let out = chi.wait_with_output().await?;
+        debug_log!("command output {:?}", out);
         let ts = Utc::now();
         match tx.send(Exit {
             ts,
-            pid, 
+            pid,
             status: out.status.code().unwrap(),
         }) {
             Ok(_) => {
-                // debug_log!("command and notification succeeded: {:?}", cmd);
+                debug_log!("command and notification succeeded: {:?}", out);
                 if forget {
                     std::mem::forget(cmd);
                 }
@@ -67,15 +62,14 @@ pub trait ProcessMonitor {
             Err(e) => {
                 error!("command {:?} exited but receiver dropped.", cmd);
                 error!("couldn't send messages: {:?}", e);
-                Err(std::io::Error::from(std::io::ErrorKind::ConnectionRefused))
+                Err(std::io::ErrorKind::ConnectionRefused.into())
             }
         }
     }
     async fn wait(&self, rx: Receiver<Exit>) -> std::io::Result<Exit> {
-        // debug_log!("waiting...");
-        rx.await.map_err(|e| {
+        rx.await.map_err(|_| {
             error!("sender dropped.");
-            std::io::Error::from(std::io::ErrorKind::BrokenPipe)
+            std::io::ErrorKind::BrokenPipe.into()
         })
     }
 }

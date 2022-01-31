@@ -256,7 +256,7 @@ impl RuncIO for NullIO {
 
     unsafe fn close_after_start(&self) {
         drop(File::from_raw_fd(self.dev_null_fd));
-    }    
+    }
 }
 
 #[derive(Debug, Clone)]

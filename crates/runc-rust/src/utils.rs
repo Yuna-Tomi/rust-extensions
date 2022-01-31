@@ -45,7 +45,10 @@ pub const TEXT: &str = "text";
 pub const DEFAULT_COMMAND: &str = "runc";
 
 // helper to resolve path (such as path for runc binary, pid files, etc. )
-pub fn abs_path_buf(path: impl AsRef<Path>) -> Result<PathBuf, Error> {
+pub fn abs_path_buf<P>(path: P) -> Result<PathBuf, Error>
+where
+    P: AsRef<Path>,
+{
     Ok(path
         .as_ref()
         .absolutize()
@@ -53,7 +56,10 @@ pub fn abs_path_buf(path: impl AsRef<Path>) -> Result<PathBuf, Error> {
         .to_path_buf())
 }
 
-pub fn abs_string(path: impl AsRef<Path>) -> Result<String, Error> {
+pub fn abs_string<P>(path: P) -> Result<String, Error>
+where
+    P: AsRef<Path>,
+{
     Ok(abs_path_buf(path)?
         .to_string_lossy()
         .parse::<String>()
@@ -77,7 +83,10 @@ pub fn make_temp_file_in_runtime_dir() -> Result<(NamedTempFile, String), Error>
     Ok((temp_file, file_name))
 }
 
-pub fn binary_path(path: impl AsRef<Path>) -> Option<PathBuf> {
+pub fn binary_path<P>(path: P) -> Option<PathBuf>
+where
+    P: AsRef<Path>,
+{
     env::var_os("PATH").and_then(|paths| {
         env::split_paths(&paths).find_map(|dir| {
             let full_path = dir.join(path.as_ref());

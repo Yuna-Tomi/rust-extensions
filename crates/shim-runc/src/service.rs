@@ -26,7 +26,7 @@ use containerd_runc_rust as runc;
 use containerd_shim as shim;
 use containerd_shim_protos as protos;
 
-use log::info;
+use log::{error, info};
 use once_cell::sync::Lazy;
 use protobuf::well_known_types::Timestamp;
 use protobuf::{RepeatedField, SingularPtrField};
@@ -130,14 +130,11 @@ impl shim::Shim for Service {
         self.clone()
     }
 
+    /// Cleaning up all containers in blocking way, when `shim delete` is invoked.
     fn delete_shim(&mut self) -> Result<DeleteResponse, Self::Error> {
-        debug_log!("call delete_shim");
         let cwd = env::current_dir()?;
-        debug_log!("current dir: {:?}", cwd);
-        let parent = cwd.parent().expect("shim running on root directory.");
+        let parent = cwd.parent().expect("Invalid: shim running on root directory.");
         let path = parent.join(&self.id);
-        // let runtime = container::read_runtime(&path).map_err(|e| Self::Error::Delete(e.to_string()))?;
-        // debug_log!("delete_shim: runtime={}", runtime);
         let opts =
             container::read_options(&path).map_err(|e| Self::Error::Delete(e.to_string()))?;
         let root = match opts {
@@ -147,10 +144,12 @@ impl shim::Shim for Service {
         let runc = utils::new_runc(&root, &path, self.namespace.clone(), "", false)
             .map_err(|e| Self::Error::Delete(e.to_string()))?;
         let opts = DeleteOpts::new().force(true);
+
         runc.delete(&self.id, Some(&opts))
             .map_err(|e| Self::Error::Delete(e.to_string()))?;
+
         sys_mount::unmount(&path.as_path().join("rootfs"), UnmountFlags::empty()).map_err(|e| {
-            log::error!("failed to cleanup rootfs mount");
+            error!("failed to cleanup rootfs mount");
             Self::Error::Delete(e.to_string())
         })?;
 
@@ -160,7 +159,6 @@ impl shim::Shim for Service {
         });
         let exited_at = SingularPtrField::from_option(now);
 
-        debug_log!("successfully deleted shim.");
         Ok(DeleteResponse {
             exited_at,
             exit_status: 137, // SIGKILL + 128
@@ -176,11 +174,6 @@ impl shim::Task for Service {
         _req: CreateTaskRequest,
     ) -> ttrpc::Result<CreateTaskResponse> {
         debug_log!("TTRPC call: create\nid={}", _req.id);
-        // let mut opts = CreateOpts::new().pid_file(pid_file);
-        // if _req.terminal {
-        //     let pty_master = PTY_MASTER.try_read().unwrap();
-        //     opts = opts.console_socket(&pty_master.console_socket);
-        // }
 
         let id = _req.id.clone();
         let unknown_fields = _req.unknown_fields.clone();
@@ -209,9 +202,6 @@ impl shim::Task for Service {
         }
 
         debug_log!("TTRPC call succeeded: create\npid={}", pid);
-        // sleep for debug.
-        std::thread::sleep(std::time::Duration::from_secs(100));
-
         Ok(CreateTaskResponse {
             pid,
             unknown_fields,
@@ -320,9 +310,10 @@ impl shim::Task for Service {
 
         let stdio = p.stdio();
         debug_log!(
-            "TTRPC call succeeded: state\nid={}, exec_id={}",
+            "TTRPC call succeeded: state\nid={}, exec_id={}, state={:?}",
             _req.get_id(),
-            _req.get_exec_id()
+            _req.get_exec_id(),
+            status,
         );
         Ok(StateResponse {
             id: _req.exec_id,

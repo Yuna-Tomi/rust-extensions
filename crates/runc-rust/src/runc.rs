@@ -39,6 +39,7 @@ use crate::LogFormat;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use crate::dbg::*;
 
 /// Inner struct for runc configuration
 #[derive(Debug, Clone, Default)]
@@ -71,11 +72,17 @@ pub struct RuncConfig {
 }
 
 impl RuncConfig {
-    pub fn command(&mut self, command: impl AsRef<Path>) {
+    pub fn command<P>(&mut self, command: P)
+    where
+        P: AsRef<Path>,
+    {
         self.command = Some(command.as_ref().to_path_buf());
     }
 
-    pub fn root(&mut self, root: impl AsRef<Path>) {
+    pub fn root<P>(&mut self, root: P)
+    where
+        P: AsRef<Path>,
+    {
         self.root = Some(root.as_ref().to_path_buf());
     }
 
@@ -83,7 +90,10 @@ impl RuncConfig {
         self.debug = debug;
     }
 
-    pub fn log(&mut self, log: impl AsRef<Path>) {
+    pub fn log<P>(&mut self, log: P)
+    where
+        P: AsRef<Path>,
+    {
         self.log = Some(log.as_ref().to_path_buf());
     }
 
@@ -166,6 +176,7 @@ impl Args for Runc {
     fn args(&self) -> Self::Output {
         let mut args: Vec<String> = vec![];
         if let Some(root) = &self.root {
+            debug_log!("setting root...: {:?}", root);
             args.push(ROOT.to_string());
             args.push(utils::abs_string(root)?);
         }
@@ -173,6 +184,7 @@ impl Args for Runc {
             args.push(DEBUG.to_string());
         }
         if let Some(log_path) = &self.log {
+            debug_log!("setting log_path...: {:?}", log_path);
             args.push(LOG.to_string());
             args.push(utils::abs_string(log_path)?);
         }

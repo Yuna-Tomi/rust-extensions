@@ -92,12 +92,18 @@ impl CreateOpts {
         self
     }
 
-    pub fn pid_file(mut self, pid_file: impl AsRef<Path>) -> Self {
+    pub fn pid_file<P>(mut self, pid_file: P) -> Self
+    where
+        P: AsRef<Path>,
+    {
         self.pid_file = Some(pid_file.as_ref().to_path_buf());
         self
     }
 
-    pub fn console_socket(mut self, console_socket: impl AsRef<Path>) -> Self {
+    pub fn console_socket<P>(mut self, console_socket: P) -> Self
+    where
+        P: AsRef<Path>,
+    {
         self.console_socket = Some(console_socket.as_ref().to_path_buf());
         self
     }
@@ -159,12 +165,18 @@ impl ExecOpts {
         self
     }
 
-    pub fn pid_file(mut self, pid_file: impl AsRef<Path>) -> Self {
+    pub fn pid_file<P>(mut self, pid_file: P) -> Self
+    where
+        P: AsRef<Path>,
+    {
         self.pid_file = Some(pid_file.as_ref().to_path_buf());
         self
     }
 
-    pub fn console_socket(mut self, console_socket: impl AsRef<Path>) -> Self {
+    pub fn console_socket<P>(mut self, console_socket: P) -> Self
+    where
+        P: AsRef<Path>,
+    {
         self.console_socket = Some(console_socket.as_ref().to_path_buf());
         self
     }

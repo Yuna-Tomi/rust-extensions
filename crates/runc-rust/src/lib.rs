@@ -45,7 +45,7 @@ use crate::utils::{JSON, TEXT};
 use std::fmt::{self, Display};
 use std::io::Write;
 use std::path::Path;
-use std::process::{Child, ExitStatus, Stdio};
+use std::process::{Child, ExitStatus, Output, Stdio};
 use std::time::Duration;
 use tempfile::NamedTempFile;
 use tokio::time;
@@ -63,7 +63,6 @@ pub mod monitor;
 pub mod options;
 mod runc;
 pub mod specs;
-mod stream;
 mod utils;
 mod dbg {
     pub use crate::debug::*;
@@ -129,12 +128,18 @@ impl RuncConfig {
         Self::default()
     }
 
-    pub fn command(mut self, command: impl AsRef<Path>) -> Self {
+    pub fn command<P>(mut self, command: P) -> Self
+    where
+        P: AsRef<Path>,
+    {
         self.0.command(command);
         self
     }
 
-    pub fn root(mut self, root: impl AsRef<Path>) -> Self {
+    pub fn root<P>(mut self, root: P) -> Self
+    where
+        P: AsRef<Path>,
+    {
         self.0.root(root);
         self
     }
@@ -144,7 +149,10 @@ impl RuncConfig {
         self
     }
 
-    pub fn log(mut self, log: impl AsRef<Path>) -> Self {
+    pub fn log<P>(mut self, log: P) -> Self
+    where
+        P: AsRef<Path>,
+    {
         self.0.log(log);
         self
     }
@@ -236,10 +244,7 @@ impl RuncClient {
         combined_output: bool,
         forget: bool,
     ) -> Result<RuncResponse> {
-        let mut child = cmd.spawn().map_err(|e| {
-            debug_log!("error on spawn: {}", e);
-            Error::ProcessSpawnFailed(e)
-        })?;
+        let child = cmd.spawn().map_err(Error::ProcessSpawnFailed)?;
         let pid = child.id();
         debug_log!("command launch {:?}", cmd);
         let result = child.wait_with_output().map_err(Error::InvalidCommand)?;
@@ -251,19 +256,6 @@ impl RuncClient {
             // this forget surely enables fds outside this function
             std::mem::forget(cmd);
         }
-        let out = std::process::Command::new("ls")
-            .arg("-l")
-            .arg("/proc/self/fd")
-            .output()
-            .map_err(|e| {
-                debug_log!("{}", e);
-                e
-            })
-            .unwrap();
-        let out = String::from_utf8(out.stdout).unwrap();
-        let out = out.split("\n").collect::<Vec<&str>>();
-        debug_log!("fds: {:#?}", out);
-
         if status.success() {
             if combined_output {
                 Ok(RuncResponse {
@@ -290,12 +282,10 @@ impl RuncClient {
     }
 
     /// Create a new container
-    pub fn create(
-        &self,
-        id: &str,
-        bundle: impl AsRef<Path>,
-        opts: Option<&CreateOpts>,
-    ) -> Result<RuncResponse> {
+    pub fn create<P>(&self, id: &str, bundle: P, opts: Option<&CreateOpts>) -> Result<RuncResponse>
+    where
+        P: AsRef<Path>,
+    {
         let mut args = vec![
             "create".to_string(),
             "--bundle".to_string(),
@@ -422,12 +412,10 @@ impl RuncClient {
     }
 
     /// Run the create, start, delete lifecycle of the container and return its exit status
-    pub fn run(
-        &self,
-        id: &str,
-        bundle: impl AsRef<Path>,
-        opts: Option<&CreateOpts>,
-    ) -> Result<RuncResponse> {
+    pub fn run<P>(&self, id: &str, bundle: P, opts: Option<&CreateOpts>) -> Result<RuncResponse>
+    where
+        P: AsRef<Path>,
+    {
         let mut args = vec!["run".to_string(), "--bundle".to_string()];
         if let Some(opts) = opts {
             args.append(&mut opts.args()?);
@@ -506,9 +494,9 @@ pub struct RuncAsyncClient(runc::Runc);
 const MONITOR: DefaultMonitor = DefaultMonitor::new();
 
 /// Async client for runc
-/// Note that you MUST use this client on tokio runtime, as this client internally use tokio::process::Command;
+/// Note that you MUST use this client on tokio runtime, as this client internally use [`tokio::process::Command`]
+/// and some other utilities.
 impl RuncAsyncClient {
-
     /// Create a new runc client from the supplied configuration
     pub fn from_config(config: RuncConfig) -> Result<Self> {
         // debug_log!("build async client...");
@@ -517,8 +505,12 @@ impl RuncAsyncClient {
 
     #[cfg(target_os = "linux")]
     pub fn command(&self, args: &[String]) -> Result<tokio::process::Command> {
+        debug_log!("command setting...");
         let args = [&self.0.args()?, args].concat();
         let mut cmd = tokio::process::Command::new(&self.0.command);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
         cmd.args(&args).env_remove("NOTIFY_SOCKET"); // NOTIFY_SOCKET introduces a special behavior in runc but should only be set if invoked from systemd
         Ok(cmd)
     }
@@ -529,23 +521,24 @@ impl RuncAsyncClient {
         combined_output: bool,
         forget: bool,
     ) -> Result<RuncResponse> {
-        debug_log!("channel setting...");
+        debug_log! {"launch called."};
         let (tx, rx) = tokio::sync::oneshot::channel::<Exit>();
-
-        debug_log!("command launch {:?}", cmd);
         let start = MONITOR.start(cmd, tx, forget);
         let wait = MONITOR.wait(rx);
-
-        let out = start.await.map_err(Error::InvalidCommand)?;
-        debug_log!("got output");
-        let Exit { pid, status, .. } = wait.await.map_err(Error::InvalidCommand)?;
-        let status = out.status;
+        let (
+            Output {
+                status,
+                stdout,
+                stderr,
+            },
+            Exit { pid, .. },
+        ) = tokio::try_join!(start, wait).map_err(Error::InvalidCommand)?;
 
         // ugly hack to work around
-        let stdout = String::from_utf8(out.stdout).unwrap();
-        let stderr = String::from_utf8(out.stderr).unwrap();
-
-        // debug_log!("fds: {:#?}", check_fds!());
+        let stdout = String::from_utf8(stdout)
+            .expect("returned non-utf8 characters from container process.");
+        let stderr = String::from_utf8(stderr)
+            .expect("returned non-utf8 characters from container process.");
 
         if status.success() {
             if combined_output {
@@ -562,8 +555,6 @@ impl RuncAsyncClient {
                 })
             }
         } else {
-            // [DEBUG]
-            // let stdout = stdout + &args.join(" ");
             Err(Error::CommandFailed {
                 status,
                 stdout,
@@ -582,13 +573,10 @@ impl RuncAsyncClient {
     }
 
     /// Create a new container
-    #[tokio::main]
-    pub async fn create(
-        &self,
-        id: &str,
-        bundle: impl AsRef<Path>,
-        opts: Option<&CreateOpts>,
-    ) -> Result<()> {
+    pub async fn create<P>(&self, id: &str, bundle: P, opts: Option<&CreateOpts>) -> Result<()>
+    where
+        P: AsRef<Path>,
+    {
         let mut args = vec![
             "create".to_string(),
             "--bundle".to_string(),
@@ -597,36 +585,37 @@ impl RuncAsyncClient {
         if let Some(opts) = opts {
             args.append(&mut opts.args()?);
         }
-        debug_log!("runc create...");
-        let mut cmd = self.command(&args)?;
         args.push(id.to_string());
+        let mut cmd = self.command(&args)?;
         debug_log!("command is...{:?}", cmd);
         match opts {
             Some(CreateOpts { io: Some(_io), .. }) => {
                 debug_log!("io setting...");
                 unsafe { _io.set_tk(&mut cmd) }
-                let monitor = DefaultMonitor::new();
                 let (tx, rx) = tokio::sync::oneshot::channel::<Exit>();
-                let start = monitor.start(cmd, tx, true);
-                let wait = monitor.wait(rx);
-                // debug_log!("create launched. waiting...");
-                let out = start.await.map_err(Error::InvalidCommand)?;
-                let Exit { status, .. } = wait.await.map_err(Error::InvalidCommand)?;
-                // debug_log!("closing write end for stdout/err...");
+                let start = MONITOR.start(cmd, tx, true);
+                let wait = MONITOR.wait(rx);
+                let (
+                    Output {
+                        status,
+                        stdout,
+                        stderr,
+                    },
+                    _,
+                ) = tokio::try_join!(start, wait).map_err(Error::InvalidCommand)?;
                 unsafe { _io.close_after_start() }
 
-                let stdout = String::from_utf8(out.stdout).unwrap();
-                let stderr = String::from_utf8(out.stderr).unwrap();
-                if status != 0 {
+                let stdout = String::from_utf8(stdout).unwrap();
+                let stderr = String::from_utf8(stderr).unwrap();
+                if !status.success() {
                     return Err(Error::CommandFailed {
-                        status: out.status,
+                        status,
                         stdout,
                         stderr,
                     });
                 }
             }
             _ => {
-                debug_log!("call launch...");
                 let _ = self.launch(cmd, true, false).await?;
             }
         }
@@ -662,6 +651,7 @@ impl RuncAsyncClient {
         }
         args.push(id.to_string());
         args.push(sig.to_string());
+        debug_log!("kill: args={:?}", args);
         let _ = self.launch(self.command(&args)?, true, false).await?;
         Ok(())
     }
@@ -715,12 +705,10 @@ impl RuncAsyncClient {
     }
 
     /// Run the create, start, delete lifecycle of the container and return its exit status
-    pub async fn run(
-        &self,
-        id: &str,
-        bundle: impl AsRef<Path>,
-        opts: Option<&CreateOpts>,
-    ) -> Result<()> {
+    pub async fn run<P>(&self, id: &str, bundle: P, opts: Option<&CreateOpts>) -> Result<()>
+    where
+        P: AsRef<Path>,
+    {
         let mut args = vec!["run".to_string(), "--bundle".to_string()];
         if let Some(opts) = opts {
             args.append(&mut opts.args()?);
@@ -733,21 +721,21 @@ impl RuncAsyncClient {
 
     /// Start an already created container
     pub async fn start(&self, id: &str) -> Result<()> {
-        let args = ["start".to_string(), id.to_string()];
+        let args = vec!["start".to_string(), id.to_string()];
         let _ = self.launch(self.command(&args)?, true, false).await?;
         Ok(())
     }
 
     /// Return the state of a container
     pub async fn state(&self, id: &str) -> Result<Vec<usize>> {
-        let args = ["state".to_string(), id.to_string()];
+        let args = vec!["state".to_string(), id.to_string()];
         let res = self.launch(self.command(&args)?, true, false).await?;
         Ok(serde_json::from_str(&res.output).map_err(Error::JsonDeserializationFailed)?)
     }
 
     /// Return the latest statistics for a container
     pub async fn stats(&self, id: &str) -> Result<Stats> {
-        let args = ["events".to_string(), "--stats".to_string(), id.to_string()];
+        let args = vec!["events".to_string(), "--stats".to_string(), id.to_string()];
         let res = self.launch(self.command(&args)?, true, false).await?;
         let event: Event =
             serde_json::from_str(&res.output).map_err(Error::JsonDeserializationFailed)?;
@@ -770,7 +758,7 @@ impl RuncAsyncClient {
                 .map_err(Error::SpecFileCreationError)?;
             f.flush().map_err(Error::SpecFileCreationError)?;
         }
-        let args = [
+        let args = vec![
             "update".to_string(),
             "--resources".to_string(),
             file_name,
@@ -935,16 +923,50 @@ mod tests {
         let ok_task = tokio::spawn(async move {
             ok_runc
                 .create("fake-id", "fake-bundle", Some(&opts))
+                .await
                 .expect("true failed.");
             eprintln!("ok_runc succeeded.");
         });
 
         let opts = CreateOpts::new();
         let fail_runc = fail_async_client();
-        let fail_task= tokio::spawn(async move {
+        let fail_task = tokio::spawn(async move {
             match fail_runc
                 .create("fake-id", "fake-bundle", Some(&opts))
+                .await
             {
+                Ok(_) => panic!("fail_runc returned exit status 0."),
+                Err(Error::CommandFailed {
+                    status,
+                    stdout,
+                    stderr,
+                }) => {
+                    if status.code().unwrap() == 1 && stdout.is_empty() && stderr.is_empty() {
+                        eprintln!("fail_runc succeeded.");
+                    } else {
+                        panic!("unexpected outputs from fail_runc.")
+                    }
+                }
+                Err(e) => panic!("unexpected error from fail_runc: {:?}", e),
+            }
+        });
+
+        ok_task.await.expect("ok_task failed.");
+        fail_task.await.expect("fail_task unexpectedly succeeded.");
+    }
+
+    #[tokio::test]
+    async fn test_async_start() {
+        let ok_runc = ok_async_client();
+        let ok_task = tokio::spawn(async move {
+            ok_runc.start("fake-id").await.expect("true failed.");
+            eprintln!("ok_runc succeeded.");
+        });
+
+        let opts = CreateOpts::new();
+        let fail_runc = fail_async_client();
+        let fail_task = tokio::spawn(async move {
+            match fail_runc.start("fake-id").await {
                 Ok(_) => panic!("fail_runc returned exit status 0."),
                 Err(Error::CommandFailed {
                     status,
@@ -975,6 +997,7 @@ mod tests {
         tokio::spawn(async move {
             ok_runc
                 .create("fake-id", "fake-bundle", Some(&opts))
+                .await
                 .expect("true failed.");
             eprintln!("ok_runc succeeded.");
         });
@@ -987,6 +1010,7 @@ mod tests {
         tokio::spawn(async move {
             match fail_runc
                 .create("fake-id", "fake-bundle", Some(&opts))
+                .await
             {
                 Ok(_) => panic!("fail_runc returned exit status 0."),
                 Err(Error::CommandFailed {

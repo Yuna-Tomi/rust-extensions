@@ -110,5 +110,5 @@ pub enum Error {
     Unimplemented(String),
 
     #[error("Error occured in runc client: {0}")]
-    Other(io::Error),
+    Other(Box<dyn std::error::Error + Send>),
 }

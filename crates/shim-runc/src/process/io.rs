@@ -14,13 +14,12 @@
    limitations under the License.
 */
 
-
-use super::fifo::{self, Fifo};
 use super::config::StdioConfig;
+use super::fifo::{self, Fifo};
 use containerd_runc_rust as runc;
 use nix::fcntl::{self, OFlag};
 use nix::sys::stat::Mode;
-use runc::io::{IOOption, RuncIO, RuncPipedIO, NullIO};
+use runc::io::{IOOption, NullIO, RuncIO, RuncPipedIO};
 use std::os::unix::prelude::FromRawFd;
 use std::path::Path;
 use std::pin::Pin;

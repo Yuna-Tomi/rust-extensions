@@ -26,15 +26,15 @@ use crate::options::oci::Options;
 use crate::utils;
 use chrono::Utc;
 use containerd_runc_rust as runc;
-use futures::{
-    executor,
-};
+use futures::executor;
+use log::error;
 use nix::fcntl::OFlag;
 use runc::options::KillOpts;
 use runc::RuncAsyncClient;
 use std::fs::OpenOptions;
 use std::io::{self, Read};
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use crate::dbg::*;
@@ -60,7 +60,8 @@ pub struct InitProcess {
 
     // FIXME: suspended for difficulties
     // io: Option<super::io::ProcessIO>,
-    runtime: Option<RuncAsyncClient>,
+    // runtime: Option<RuncAsyncClient>,
+    runtime: Arc<RuncAsyncClient>,
 
     /// The pausing state
     pausing: bool,
@@ -127,7 +128,7 @@ impl InitProcess {
             id: config.id,
             bundle: config.bundle,
             // io: None,
-            runtime: Some(runtime),
+            runtime: Arc::new(runtime),
             stdin: None,
             stdio,
             pausing: false,
@@ -180,48 +181,42 @@ impl InitProcess {
     // open another end in copy_pipes() or copy_console()
     // Note that we have WaitGroup in some crate like crossbeam,
     // but this style may be more comprehensive.
-    fn create_and_io_preparation(
+    #[tokio::main]
+    async fn create_and_io_preparation(
         &mut self,
         config: CreateConfig,
         opts: runc::options::CreateOpts,
     ) -> std::io::Result<()> {
-        let rt = tokio::runtime::Builder::new_current_thread().build()?;
-        rt.block_on(async {
-            let CreateConfig {
-                id,
-                bundle,
-                // terminal,
-                // stdin,
-                ..
-            } = config;
+        let CreateConfig {
+            id,
+            bundle,
+            // terminal,
+            // stdin,
+            ..
+        } = config;
 
-            // might be ugly hack: take runtime(runc client) and return it after executing "create" on green thread.
-            let runtime = self.runtime.take().expect(RUNTIME_NOT_FOUND_MSG);
-            let create = tokio::spawn(async move {
-                runtime.create(&id, bundle, Some(&opts))?;
-                // ugly hack to workaround
-                Ok::<RuncAsyncClient, runc::error::Error>(runtime)
-            });
+        let runtime = Arc::clone(&self.runtime);
+        let create = tokio::spawn(async move { runtime.create(&id, bundle, Some(&opts)).await });
 
-            // FIXME: need task corresponds to openStdin() in Go
-            // see https://github.com/containerd/containerd/blob/main/pkg/process/init.go#L178
-            // let open_stdin = tokio::spawn(...);
+        // FIXME: need task corresponds to openStdin() in Go
+        // see https://github.com/containerd/containerd/blob/main/pkg/process/init.go#L178
+        // let open_stdin = tokio::spawn(...);
 
-            // FIXME: need task corresponds to Copy() in Go
-            // see https://github.com/containerd/containerd/blob/main/pkg/process/init.go#L178
-            // let open_stdin = tokio::spawn(...);
+        // FIXME: need task corresponds to Copy() in Go
+        // see https://github.com/containerd/containerd/blob/main/pkg/process/init.go#L178
+        // let open_stdin = tokio::spawn(...);
 
-            let runtime = create.await.map_err(|e| {
+        create
+            .await
+            .map_err(|e| {
                 debug_log!("runtime create failed: {:#?}", e);
                 e
             })?
-                .map_err(|e| {
+            .map_err(|e| {
                 debug_log!("{}", e);
                 std::io::ErrorKind::Other
             })?;
-            let _ = self.runtime.get_or_insert(runtime);
-            Ok::<(), std::io::Error>(())
-        })
+        Ok(())
     }
 
     pub fn start(&mut self) -> io::Result<()> {
@@ -272,74 +267,67 @@ impl ContainerProcess for InitProcess {}
 
 impl InitState for InitProcess {
     fn start(&mut self) -> io::Result<()> {
-        // let _m = self.mu.lock().unwrap();
+        let _m = self.mu.lock().unwrap();
         // wait for wait() on creation process
         // while let Some(_) = self.wait_block {} // this produce deadlock because of Mutex of containers at Service
         // self.wait_block = Some(rx);
         // tx.send(()).unwrap(); // notify successfully started.
-
-        debug_log!("call RuncClient::start");
-        let res = executor::block_on(async {
-            self.runtime
-                .as_ref()
-                .expect(RUNTIME_NOT_FOUND_MSG)
-                .start(&self.id)
-                .await
-                .map_err(|e| {
-                    log::error!("{}", e);
-                    io::ErrorKind::Other
-                })
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        rt.block_on(async {
+            self.runtime.start(&self.id).await.map_err(|e| {
+                error!("runc start failed: {}", e);
+                io::ErrorKind::Other
+            })
         })?;
-
-        debug_log!("started container: res={:?}", res);
         self.state = ProcessState::Running;
         Ok(())
     }
 
     fn delete(&mut self) -> io::Result<()> {
         let _m = self.mu.lock().unwrap();
-        executor::block_on(async {
-            self.runtime
-                .as_ref()
-                .expect(RUNTIME_NOT_FOUND_MSG)
-                .delete(&self.id, None)
-                .await
-                .map_err(|e| {
-                    log::error!("{}", e);
-                    io::ErrorKind::Other
-                })
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        rt.block_on(async {
+            self.runtime.delete(&self.id, None).await.map_err(|e| {
+                error!("runc delete failed: {}", e);
+                io::ErrorKind::Other
+            })
         })?;
         self.state = ProcessState::Deleted;
         Ok(())
     }
 
     fn pause(&mut self) -> io::Result<()> {
-        panic!("unimplemented!")
+        unimplemented!()
     }
 
     fn resume(&mut self) -> io::Result<()> {
-        panic!("unimplemented!")
+        unimplemented!()
     }
 
     fn update(&mut self, _resource_config: Option<&dyn std::any::Any>) -> io::Result<()> {
-        panic!("unimplemented!")
+        unimplemented!()
     }
 
     fn exec(&self, _config: ExecConfig) -> io::Result<()> {
-        panic!("unimplemented!")
+        unimplemented!()
     }
 
     fn kill(&mut self, sig: u32, all: bool) -> io::Result<()> {
         let _m = self.mu.lock().unwrap();
         let opts = KillOpts::new().all(all);
-        executor::block_on(async {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        rt.block_on(async {
             self.runtime
-                .as_ref()
-                .expect(RUNTIME_NOT_FOUND_MSG)
                 .kill(&self.id, sig, Some(&opts))
                 .await
                 .map_err(|e| {
-                    log::error!("{}", e);
+                    error!("runc kill failed: {}", e);
                     io::ErrorKind::Other
                 })
         })?;
@@ -357,7 +345,7 @@ impl InitState for InitProcess {
     fn state(&self) -> io::Result<ProcessState> {
         let _m = self.mu.lock().unwrap();
         match self.state {
-            ProcessState::Unknown => Err(io::Error::from(io::ErrorKind::NotFound)),
+            ProcessState::Unknown => Err(io::ErrorKind::NotFound.into()),
             _ => Ok(self.state),
         }
     }
@@ -393,16 +381,11 @@ impl Process for InitProcess {
     }
 
     fn wait(&mut self) -> io::Result<()> {
-        // FIXME: Might be ugly hack
-        debug_log!("InitProcess::wait pid={}", self.pid);
         let rx = self
             .wait_block
             .take()
             .ok_or_else(|| io::ErrorKind::NotFound)?;
-        executor::block_on(async {
-            // FIXME: need appropriate error handling
-            rx.await.map_err(|_| io::ErrorKind::Other)
-        })?;
+        executor::block_on(async { rx.await.map_err(|_| io::ErrorKind::Other) })?;
         self.state = ProcessState::Stopped;
         Ok(())
     }
