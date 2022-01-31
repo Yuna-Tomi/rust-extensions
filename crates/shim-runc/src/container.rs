@@ -54,6 +54,7 @@ pub struct Container {
     mu: Arc<Mutex<()>>,
     id: String,
     bundle: String,
+    // FIXME: cgroup settings
     // cgroup: impl protos::api:: ,
     /// This container's process itself. (e.g. init process)
     process_self: InitProcess,
@@ -239,7 +240,6 @@ impl Container {
 
     pub fn process<'a>(&'a self, id: &str) -> io::Result<&'a InitProcess> {
         let _m = self.mu.lock().unwrap();
-        // Might be ugly hack: is it good multiple "InitProcess"s that represent same process exist?
         if id == "" || id == self.id {
             Ok(&self.process_self)
         } else {
@@ -253,7 +253,6 @@ impl Container {
 
     pub fn process_mut<'a>(&'a mut self, id: &str) -> io::Result<&'a mut InitProcess> {
         let _m = self.mu.lock().unwrap();
-        // Might be ugly hack: is it good multiple "InitProcess"s that represent same process exist?
         if id == "" || id == self.id {
             Ok(&mut self.process_self)
         } else {
@@ -348,19 +347,6 @@ impl Container {
     }
 }
 
-// // FIXME: define config
-// fn new_init_process<P, W, R>(
-//     path: P,
-//     work_dir: W,
-//     namespace: &str,
-//     config: &str,
-//     options: Options,
-//     rootfs: R,
-// ) -> io::Result<()> {
-//     let runtime = new_runc(Some(options.root.clone()), path, namespace, runtime, systemd)
-//     Ok(())
-// }
-
 /// reads the option information from the path.
 /// When the file does not exist, returns [`None`] without an error.
 pub fn read_options<P>(path: P) -> io::Result<Option<Options>>
@@ -384,7 +370,6 @@ where
     P: AsRef<Path>,
 {
     let file_path = path.as_ref().join(OPTIONS_FILENAME);
-    debug_log!("write options.");
     let f = fs::OpenOptions::new()
         .create(true)
         .write(true)
@@ -393,7 +378,6 @@ where
     let mut writer = BufWriter::new(f);
     opts.write_to_writer(&mut writer)?;
     writer.flush()?;
-    debug_log!("write options succeeded: {:?}", file_path.as_os_str());
     Ok(())
 }
 
@@ -417,7 +401,6 @@ where
     P: AsRef<Path>,
     R: AsRef<str>,
 {
-    debug_log!("write runtime: {:?}", runtime.as_ref());
     let file_path = path.as_ref().join("runtime");
     let f = fs::OpenOptions::new()
         .create(true)
@@ -426,6 +409,5 @@ where
         .open(&file_path)?;
     let mut writer = BufWriter::new(f);
     writer.write_all(runtime.as_ref().as_bytes())?;
-    debug_log!("write runtime succeeded: {:?}", file_path.as_os_str());
     Ok(())
 }

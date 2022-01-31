@@ -331,6 +331,7 @@ impl InitState for InitProcess {
                     io::ErrorKind::Other
                 })
         })?;
+        self.state = ProcessState::Stopped;
         Ok(())
     }
 
