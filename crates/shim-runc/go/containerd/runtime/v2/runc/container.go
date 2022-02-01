@@ -38,8 +38,6 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// const logfile_container = "/home/ytomida.linux/nerd_dev/rust-extensions/crates/.mydebug/container.go.log"
-
 // func dbg(fn, s string) {
 // 	f, _ := os.OpenFile(fn, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0666)
 // 	f.Write([]byte(time.Now().Format(time.RFC3339) + ":" + s + "\n"))

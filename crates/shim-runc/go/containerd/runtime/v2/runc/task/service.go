@@ -109,8 +109,6 @@ type service struct {
 	shutdown shutdown.Service
 }
 
-// const logfile_service = "/home/ytomida.linux/nerd_dev/rust-extensions/crates/.mydebug/service.go.log"
-
 // func dbg(fn, s string) {
 // 	f, _ := os.OpenFile(fn, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0666)
 // 	f.Write([]byte(time.Now().Format(time.RFC3339) + ":" + s + "\n"))
