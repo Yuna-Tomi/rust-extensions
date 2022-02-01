@@ -134,15 +134,15 @@ impl RuncConfig {
         self.timeout = Some(Duration::from_millis(millis));
     }
 
-    pub fn build(self) -> Result<Runc, Error> {
-        let command = utils::binary_path(self.command.unwrap_or(PathBuf::from(DEFAULT_COMMAND)))
+    pub fn build(&mut self) -> Result<Runc, Error> {
+        let command = utils::binary_path(self.command.clone().unwrap_or(PathBuf::from(DEFAULT_COMMAND)))
             .ok_or(Error::NotFound)?;
         Ok(Runc {
             command,
-            root: self.root,
-            debug: self.debug,
-            log: self.log,
-            log_format: self.log_format.unwrap_or(LogFormat::Text),
+            root: self.root.clone(),
+            debug: self.debug.clone(),
+            log: self.log.clone(),
+            log_format: self.log_format.clone().unwrap_or(LogFormat::Text),
             // self.pdeath_signal: self.pdeath_signal,
             systemd_cgroup: self.systemd_cgroup,
             set_pgid: self.set_pgid,

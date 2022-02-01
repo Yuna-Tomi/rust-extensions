@@ -128,7 +128,7 @@ impl RuncConfig {
         Self::default()
     }
 
-    pub fn command<P>(mut self, command: P) -> Self
+    pub fn command<P>(&mut self, command: P) -> &mut Self
     where
         P: AsRef<Path>,
     {
@@ -136,7 +136,7 @@ impl RuncConfig {
         self
     }
 
-    pub fn root<P>(mut self, root: P) -> Self
+    pub fn root<P>(&mut self, root: P) -> &mut Self
     where
         P: AsRef<Path>,
     {
@@ -144,12 +144,12 @@ impl RuncConfig {
         self
     }
 
-    pub fn debug(mut self, debug: bool) -> Self {
+    pub fn debug(&mut self, debug: bool) -> &mut Self {
         self.0.debug(debug);
         self
     }
 
-    pub fn log<P>(mut self, log: P) -> Self
+    pub fn log<P>(&mut self, log: P) -> &mut Self
     where
         P: AsRef<Path>,
     {
@@ -157,22 +157,22 @@ impl RuncConfig {
         self
     }
 
-    pub fn log_format(mut self, log_format: LogFormat) -> Self {
+    pub fn log_format(&mut self, log_format: LogFormat) -> &mut Self {
         self.0.log_format(log_format);
         self
     }
 
-    pub fn log_format_json(mut self) -> Self {
+    pub fn log_format_json(&mut self) -> &mut Self {
         self.0.log_format_json();
         self
     }
 
-    pub fn log_format_text(mut self) -> Self {
+    pub fn log_format_text(&mut self) -> &mut Self {
         self.0.log_format_text();
         self
     }
 
-    pub fn systemd_cgroup(mut self, systemd_cgroup: bool) -> Self {
+    pub fn systemd_cgroup(&mut self, systemd_cgroup: bool) -> &mut Self {
         self.0.systemd_cgroup(systemd_cgroup);
         self
     }
@@ -203,11 +203,11 @@ impl RuncConfig {
         self
     }
 
-    pub fn build(self) -> Result<RuncClient> {
+    pub fn build(&mut self) -> Result<RuncClient> {
         Ok(RuncClient(self.0.build()?))
     }
 
-    pub fn build_async(self) -> Result<RuncAsyncClient> {
+    pub fn build_async(&mut self) -> Result<RuncAsyncClient> {
         Ok(RuncAsyncClient(self.0.build()?))
     }
 }
@@ -217,7 +217,7 @@ pub struct RuncClient(runc::Runc);
 
 impl RuncClient {
     /// Create a new runc client from the supplied configuration
-    pub fn from_config(config: RuncConfig) -> Result<Self> {
+    pub fn from_config(mut config: RuncConfig) -> Result<Self> {
         config.build()
     }
 
@@ -498,7 +498,7 @@ const MONITOR: DefaultMonitor = DefaultMonitor::new();
 /// and some other utilities.
 impl RuncAsyncClient {
     /// Create a new runc client from the supplied configuration
-    pub fn from_config(config: RuncConfig) -> Result<Self> {
+    pub fn from_config(mut config: RuncConfig) -> Result<Self> {
         // debug_log!("build async client...");
         config.build_async()
     }
