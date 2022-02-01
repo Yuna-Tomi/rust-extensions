@@ -146,9 +146,11 @@ impl InitProcess {
     /// Create the process with the provided config
     pub fn create(&mut self, config: CreateConfig) -> io::Result<()> {
         let pid_file = Path::new(&self.bundle).join("init.pid");
-        let opts = runc::options::CreateOpts::new()
-            .pid_file(&pid_file)
-            .no_pivot(self.no_pivot_root);
+        let opts = runc::options::CreateOpts {
+            pid_file: Some(pid_file.clone()),
+            no_pivot: self.no_pivot_root,
+            .. Default::default()
+        };
 
         if config.terminal {
             panic!("unimplemented");
@@ -318,7 +320,7 @@ impl InitState for InitProcess {
 
     fn kill(&mut self, sig: u32, all: bool) -> io::Result<()> {
         let _m = self.mu.lock().unwrap();
-        let opts = KillOpts::new().all(all);
+        let opts = KillOpts { all };
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;

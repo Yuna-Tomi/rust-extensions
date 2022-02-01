@@ -189,14 +189,13 @@ where
     let log = path.as_ref().join("log.json");
     let runtime = if runtime == "" { RUNC_NAME } else { runtime };
 
-    let config = RuncConfig::new()
+    RuncConfig::new()
         .command(runtime)
         .log(log)
         .log_format_json()
         .root(root)
-        .systemd_cgroup(systemd_cgroup);
-
-    RuncClient::from_config(config)
+        .systemd_cgroup(systemd_cgroup)
+        .build()
 }
 
 pub fn new_async_runc<R, P>(
@@ -219,12 +218,11 @@ where
     let log = path.as_ref().join("log.json");
     let runtime = if runtime == "" { RUNC_NAME } else { runtime };
 
-    let config = RuncConfig::new()
+    RuncConfig::new()
         .command(runtime)
         .log(log)
         .log_format_json()
         .root(root)
-        .systemd_cgroup(systemd_cgroup);
-
-    RuncAsyncClient::from_config(config)
+        .systemd_cgroup(systemd_cgroup)
+        .build_async()
 }

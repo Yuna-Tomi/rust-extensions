@@ -143,8 +143,7 @@ impl shim::Shim for Service {
         };
         let runc = utils::new_runc(&root, &path, self.namespace.clone(), "", false)
             .map_err(|e| Self::Error::Delete(e.to_string()))?;
-        let opts = DeleteOpts::new().force(true);
-
+        let opts = DeleteOpts { force: true };
         runc.delete(&self.id, Some(&opts))
             .map_err(|e| Self::Error::Delete(e.to_string()))?;
 
