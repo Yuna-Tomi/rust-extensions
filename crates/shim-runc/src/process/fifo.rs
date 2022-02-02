@@ -160,7 +160,7 @@ where
 
 #[derive(Debug)]
 pub struct Handler {
-    file: async_std::fs::File,
+    file: tokio::fs::File,
     fd: RawFd,
     dev: u64,
     ino: u64,
@@ -176,7 +176,7 @@ impl Handler {
         // here, we use fcntl directly because O_PATH is not suitable for OpenOptions
         // see https://rust-lang.github.io/rfcs/1252-open-options.html#no-access-mode-set
         let fd = fcntl::open(path.as_ref(), OFlag::O_PATH, Mode::empty())?;
-        let file = unsafe { async_std::fs::File::from_raw_fd(fd) };
+        let file = unsafe { tokio::fs::File::from_raw_fd(fd) };
         let stat = stat::fstat(fd)?;
         let handler = Handler {
             file,

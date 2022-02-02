@@ -30,7 +30,6 @@ futures = "0.3.19"
 url = "2.2.2"
 rand = "0.8.4"
 tokio = { version = "1.15.0", features = ["io-util", "rt", "rt-multi-thread"] }
-async-std = "1.10.0"
 
 [build-dependencies]
 ttrpc-codegen = "0.3.0"
