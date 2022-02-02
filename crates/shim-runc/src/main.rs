@@ -13,22 +13,27 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 */
-pub use protobuf;
-pub use ttrpc;
 
 /// Generated option structures.
 #[rustfmt::skip]
 pub mod options;
 
-pub mod container;
-mod debug;
-pub mod process;
-pub mod service;
-mod utils;
+pub use containerd_shim as shim;
+pub use containerd_shim_protos as protos;
+pub use containerd_runc_rust as runc;
 
 pub mod v2 {
+    pub use crate::service::Service;
     pub use crate::options::oci::*;
 }
+
+mod container;
+mod debug;
+mod process;
+mod service;
+mod utils;
+
+use crate::service::Service;
 
 pub mod dbg {
     pub use crate::debug::*;
@@ -37,8 +42,7 @@ pub mod dbg {
 }
 use dbg::*;
 
-use containerd_shim as shim;
-use service::Service;
+
 fn main() {
     // all arguments will be parsed inside "run" function.
     shim::run::<Service>("io.containerd.runc.v2");

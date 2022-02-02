@@ -18,9 +18,12 @@
 // https://github.com/containerd/containerd/blob/main/pkg/process/types.go
 // https://github.com/containerd/containerd/blob/main/pkg/stdio/stdio.go
 
+
 use containerd_shim_protos as protos;
-use protobuf::well_known_types::Any;
+
 use protos::shim::mount::Mount;
+
+use protobuf::well_known_types::Any;
 
 #[derive(Debug, Clone, Default)]
 pub struct MountConfig {

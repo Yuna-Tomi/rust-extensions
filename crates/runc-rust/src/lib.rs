@@ -34,22 +34,13 @@
 
 //! A crate for consuming the runc binary in your Rust applications, similar to [go-runc](https://github.com/containerd/go-runc) for Go.
 
-use crate::container::Container;
-use crate::error::Error;
-use crate::events::{Event, Stats};
-use crate::monitor::{DefaultMonitor, Exit, ProcessMonitor};
-use crate::options::*;
-use crate::specs::{LinuxResources, Process};
-
-use crate::utils::{JSON, TEXT};
 use std::fmt::{self, Display};
 use std::io::Write;
 use std::path::Path;
 use std::process::{ExitStatus, Output, Stdio};
 use std::time::Duration;
-use tempfile::NamedTempFile;
 
-use dbg::*;
+use tempfile::NamedTempFile;
 
 // suspended for difficulties
 // pub mod console;
@@ -63,11 +54,21 @@ pub mod options;
 mod runc;
 pub mod specs;
 mod utils;
+
+use crate::container::Container;
+use crate::error::Error;
+use crate::events::{Event, Stats};
+use crate::monitor::{DefaultMonitor, Exit, ProcessMonitor};
+use crate::options::*;
+use crate::specs::{LinuxResources, Process};
+use crate::utils::{JSON, TEXT};
+
 mod dbg {
     pub use crate::debug::*;
     pub use crate::debug_log;
     pub use std::io::Write as DbgWrite;
 }
+use crate::dbg::*;
 
 type Result<T> = std::result::Result<T, crate::error::Error>;
 

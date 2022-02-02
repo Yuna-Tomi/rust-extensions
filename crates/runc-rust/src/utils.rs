@@ -14,12 +14,14 @@
    limitations under the license.
 */
 
-use crate::error::Error;
-use path_absolutize::*;
 use std::env;
 use std::path::{Path, PathBuf};
+
+use path_absolutize::*;
 use tempfile::{Builder, NamedTempFile};
 use uuid::Uuid;
+
+use crate::error::Error;
 
 // constants for flags
 pub const ALL: &str = "--all";

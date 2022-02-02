@@ -1,9 +1,10 @@
-use chrono::Local;
-use once_cell::sync::Lazy;
 use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::Path;
 use std::{fs::File, sync::Mutex};
+
+use chrono::Local;
+use once_cell::sync::Lazy;
 
 pub static LOG_STATIC_DBG: Lazy<Mutex<File>> = Lazy::new(|| {
     Mutex::new({

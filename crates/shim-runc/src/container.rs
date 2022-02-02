@@ -14,27 +14,16 @@
    limitations under the License.
 */
 
-use chrono::{DateTime, Utc};
-use nix::errno::Errno;
-use nix::sys::stat;
-use nix::unistd;
+
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use sys_mount::UnmountFlags;
 
-use crate::options::oci::Options;
-use crate::process::{
-    config::{CreateConfig, MountConfig},
-    init::InitProcess,
-};
+use containerd_shim_protos as protos;
 
-use crate::utils;
-pub use containerd_shim_protos as protos;
-use protobuf::Message;
 use protos::shim::{
     empty::Empty,
     shim::{
@@ -42,6 +31,20 @@ use protos::shim::{
         ExecProcessResponse, KillRequest, StartRequest, StartResponse, StateRequest, StateResponse,
     },
 };
+
+use chrono::{DateTime, Utc};
+use nix::errno::Errno;
+use nix::sys::stat;
+use nix::unistd;
+use protobuf::Message;
+use sys_mount::UnmountFlags;
+
+use crate::options::oci::Options;
+use crate::process::{
+    config::{CreateConfig, MountConfig},
+    init::InitProcess,
+};
+use crate::utils;
 
 // for debug
 use crate::dbg::*;

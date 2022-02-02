@@ -13,19 +13,22 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 */
+use std::collections::HashMap;
+use std::io;
+use std::path::Path;
+use std::sync::RwLock;
+
 use containerd_runc_rust as runc;
 use containerd_shim_protos as protos;
-use once_cell::sync::Lazy;
+
 use runc::{error::Error, RuncAsyncClient, RuncClient, RuncConfig};
-use std::collections::HashMap;
-use std::sync::RwLock;
-use std::{io, path::Path};
+
+use nix::libc::c_ulong;
+use nix::mount::{MntFlags, MsFlags};
+use once_cell::sync::Lazy;
 use sys_mount::{Mount, MountFlags, SupportedFilesystems};
 
 use crate::process::config::MountConfig;
-use nix::libc::c_ulong;
-use nix::mount::{MntFlags, MsFlags};
-
 use crate::dbg::*;
 
 /// A mount helper, similar to Go version.

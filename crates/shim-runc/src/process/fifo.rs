@@ -17,15 +17,16 @@
 // NOTE: Go references
 // https://github.com/containerd/fifo/blob/main/fifo.go
 
-use nix::fcntl::{self, OFlag};
-use nix::sys::stat::{self, Mode};
-use nix::unistd;
 use std::fs;
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::prelude::{AsRawFd, FromRawFd, RawFd};
 use std::path::Path;
 use std::pin::Pin;
 use std::task::Poll;
+
+use nix::fcntl::{self, OFlag};
+use nix::sys::stat::{self, Mode};
+use nix::unistd;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::dbg::*;

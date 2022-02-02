@@ -1,7 +1,10 @@
+use std::io;
+
+use chrono::{DateTime, Utc};
+
 use super::config::{ExecConfig, StdioConfig};
 use super::state::ProcessState;
-use chrono::{DateTime, Utc};
-use std::io;
+
 pub trait InitState {
     fn start(&mut self) -> io::Result<()>;
     fn delete(&mut self) -> io::Result<()>;

@@ -13,15 +13,17 @@
    see the license for the specific language governing permissions and
    limitations under the license.
 */
-use nix::fcntl::OFlag;
-use nix::sys::stat::Mode;
-use nix::unistd::{Gid, Uid};
+
 use std::fmt::{self, Debug, Formatter};
 use std::fs::File;
 use std::os::unix::io::FromRawFd;
 use std::os::unix::prelude::{AsRawFd, RawFd};
 use std::process::Command;
 use std::sync::Mutex;
+
+use nix::fcntl::OFlag;
+use nix::sys::stat::Mode;
+use nix::unistd::{Gid, Uid};
 
 use crate::dbg::*;
 

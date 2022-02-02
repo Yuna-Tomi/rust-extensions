@@ -32,14 +32,15 @@
  * limitations under the License.
  */
 
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
 use crate::error::Error;
 use crate::options::Args;
 use crate::utils::{self, DEBUG, DEFAULT_COMMAND, LOG, LOG_FORMAT, ROOT, ROOTLESS, SYSTEMD_CGROUP};
 use crate::LogFormat;
 
 use crate::dbg::*;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 /// Inner struct for runc configuration
 #[derive(Debug, Clone, Default)]
