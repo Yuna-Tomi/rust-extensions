@@ -17,19 +17,18 @@
 use super::config::StdioConfig;
 use super::fifo::{self, Fifo};
 use containerd_runc_rust as runc;
-use nix::fcntl::{self, OFlag};
-use nix::sys::stat::Mode;
+use nix::fcntl::OFlag;
 use runc::io::{IOOption, NullIO, RuncIO, RuncPipedIO};
 use std::path::Path;
 use std::pin::Pin;
 use std::{
     ffi::OsStr,
+    fs::DirBuilder,
     os::unix::fs::DirBuilderExt,
     process::Command,
-    sync::{Arc, RwLock},
+    sync::Arc,
 };
-use std::{fs::DirBuilder, os::unix::prelude::AsRawFd};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{AsyncWrite, BufReader, BufWriter};
 use url::{ParseError, Url};
 
 use crate::dbg::*;
@@ -177,7 +176,7 @@ impl RuncIO for BinaryIO {
         panic!("unimplemented")
     }
 
-    fn set(&self, cmd: &mut Command) -> std::io::Result<()> {
+    fn set(&self, _cmd: &mut Command) -> std::io::Result<()> {
         panic!("unimplemented")
     }
 }
@@ -203,7 +202,7 @@ const FIFO_ERR_MSG: [&str; 2] = ["error copying stdout", "error copying stderr"]
 const FIFO: [&str; 2] = ["stdout", "stderr"];
 
 // In this function, each spawened tasks are expected to be lived
-// until related process will be deleted.
+// until related process will be deleted. Then this function doesn't "join"
 // Each "copy" on task will continuously copy data between
 // pipe that containered arranged and processIO that connected to runc process
 async fn copy_pipes(io: Arc<dyn RuncIO>, stdio: &StdioConfig) -> std::io::Result<()> {
@@ -212,7 +211,6 @@ async fn copy_pipes(io: Arc<dyn RuncIO>, stdio: &StdioConfig) -> std::io::Result
     // debug_log!("io files: {:?}", io_files);
     let out_err = vec![stdio.stdout.clone(), stdio.stderr.clone()];
     let mut same_file = None;
-    let mut tasks = vec![];
     for (ix, (rd, path)) in io_files.into_iter().zip(out_err.into_iter()).enumerate() {
         // Note that each io_file (stdout/stderr) have to std::mem::forget, in order not to close pipe.
         // Also, third argument corresponds to "not forget writer" for twice use of Fifo, in case of stdout==stderr.
@@ -240,7 +238,7 @@ async fn copy_pipes(io: Arc<dyn RuncIO>, stdio: &StdioConfig) -> std::io::Result
         };
         // might be ugly hack
         if fifo::is_fifo(&path)? {
-            let t = tokio::task::spawn(async move {
+            let _t = tokio::task::spawn(async move {
                 let w_fifo = Fifo::open(&path, OFlag::O_WRONLY, 0).await.map_err(|e| {
                     // debug_log!("error in await w_fifo {}", e);
                     e
@@ -258,32 +256,30 @@ async fn copy_pipes(io: Arc<dyn RuncIO>, stdio: &StdioConfig) -> std::io::Result
                 let cl = Some(r_fifo);
                 dest(wr, rd, cl, ix).await
             });
-            tasks.push(t);
         } else if let Some(wr) = same_file.take() {
             // debug_log!("pipe is not fifo -> use same file for task...");
-            let t = tokio::task::spawn(dest(wr, rd, None, ix));
-            tasks.push(t);
+            let _t = tokio::task::spawn(async move {
+                dest(wr, rd, None, ix)
+            });
             // debug_log!("task completed");
             continue;
         } else {
             // debug_log!("pipe is not fifo -> new file... {}", path.as_str());
             let drop_w = stdio.stdout == stdio.stderr;
-            let t = tokio::task::spawn(async move {
-                let f = tokio::fs::OpenOptions::new()
-                    .write(true)
-                    .append(true)
-                    .mode(0)
-                    .open(&path)
-                    .await?;
-                let wr = Box::pin(f);
-                // if drop_w {
-                //     // might be ugly hack
-                //     let f = unsafe { tokio::fs::File::from_raw_fd(w.as_raw_fd()) };
-                //     let _ = same_file.get_or_insert(Box::pin(f));
-                // }
+            let f = tokio::fs::OpenOptions::new()
+                .write(true)
+                .append(true)
+                .mode(0)
+                .open(&path)
+                .await?;
+            if drop_w {
+                let f = f.try_clone().await?;
+                let _ = same_file.get_or_insert(Box::pin(f));
+            }
+            let wr = Box::pin(f);
+            let _t = tokio::task::spawn(async move {
                 dest(wr, rd, None, ix).await
             });
-            tasks.push(t);
         }
     }
 
@@ -314,12 +310,7 @@ async fn copy_pipes(io: Arc<dyn RuncIO>, stdio: &StdioConfig) -> std::io::Result
             // don't have to forget these reader/writer
         };
         debug_log!("spawn task for stdin");
-        let t = tokio::task::spawn(copy_buf);
-        tasks.push(t);
-    }
-
-    for t in tasks {
-        t.await??;
+        let _t = tokio::task::spawn(copy_buf);
     }
     // debug_log!("task completed");
     Ok(())
