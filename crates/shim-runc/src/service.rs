@@ -22,6 +22,7 @@ use std::collections::HashMap;
 use std::env;
 use std::sync::RwLock;
 
+use chrono::Utc;
 use containerd_runc_rust as runc;
 use containerd_shim as shim;
 use containerd_shim_protos as protos;
@@ -35,11 +36,10 @@ use protos::shim::{
     empty::Empty,
     shim::{
         CreateTaskRequest, CreateTaskResponse, DeleteRequest, DeleteResponse, ExecProcessRequest,
-        ExecProcessResponse, KillRequest, StartRequest, StartResponse, StateRequest, StateResponse,
+        KillRequest, StartRequest, StartResponse, StateRequest, StateResponse,
         WaitRequest, WaitResponse,
     },
 };
-use runc::error::Error as RuncError;
 use runc::options::*;
 use shim::{api, ExitSignal, TtrpcContext, TtrpcResult};
 use sys_mount::UnmountFlags;
@@ -77,11 +77,6 @@ pub struct Service {
     namespace: String,
     exit: ExitSignal,
 }
-
-// impl Service {
-//     fn get_container(&self, )
-
-// }
 
 impl shim::Shim for Service {
     type Error = shim::Error;
@@ -133,7 +128,9 @@ impl shim::Shim for Service {
     /// Cleaning up all containers in blocking way, when `shim delete` is invoked.
     fn delete_shim(&mut self) -> Result<DeleteResponse, Self::Error> {
         let cwd = env::current_dir()?;
-        let parent = cwd.parent().expect("Invalid: shim running on root directory.");
+        let parent = cwd
+            .parent()
+            .expect("Invalid: shim running on root directory.");
         let path = parent.join(&self.id);
         let opts =
             container::read_options(&path).map_err(|e| Self::Error::Delete(e.to_string()))?;
@@ -152,8 +149,10 @@ impl shim::Shim for Service {
             Self::Error::Delete(e.to_string())
         })?;
 
+        let now = Utc::now();
         let now = Some(Timestamp {
-            // FIXME: for debug
+            seconds: now.timestamp(),
+            nanos: (now.timestamp_nanos() % 1_000_000) as i32,
             ..Default::default()
         });
         let exited_at = SingularPtrField::from_option(now);
@@ -308,6 +307,14 @@ impl shim::Task for Service {
         };
 
         let stdio = p.stdio();
+        let exited_at = if let Some(exited_at) = p.exited_at() {
+            Some(Timestamp {
+                seconds: exited_at.timestamp(),
+                nanos: (exited_at.timestamp_nanos() % 1_000_000) as i32,
+                ..Default::default()
+            })
+        } else { None };
+        let exited_at = SingularPtrField::from_option(exited_at);
         debug_log!(
             "TTRPC call succeeded: state\nid={}, exec_id={}, state={:?}",
             _req.get_id(),
@@ -315,7 +322,7 @@ impl shim::Task for Service {
             status,
         );
         Ok(StateResponse {
-            id: _req.exec_id,
+            id: _req.id,
             bundle: p.bundle.clone(),
             pid: p.pid() as u32,
             status,
@@ -324,6 +331,8 @@ impl shim::Task for Service {
             stderr: stdio.stderr,
             terminal: stdio.terminal,
             exit_status: p.exit_status() as u32,
+            exited_at,
+            exec_id: _req.exec_id,
             unknown_fields: _req.unknown_fields,
             cached_size: _req.cached_size,
             ..Default::default()
@@ -374,8 +383,9 @@ impl shim::Task for Service {
         debug_log!("InitProcess::wait succeeded.");
         let exited_at = match p.exited_at() {
             Some(t) => Some(Timestamp {
-                // nanos: t.timestamp_nanos() as i32, // ugly hack
-                ..Default::default() // all default, just for debug
+                seconds: t.timestamp(),
+                nanos: (t.timestamp_nanos() % 1_000_000) as i32,
+                ..Default::default()
             }),
             None => None,
         };
@@ -450,8 +460,9 @@ impl shim::Task for Service {
                 // Might be ugly hack
                 let exited_at = match exited_at {
                     Some(t) => Some(Timestamp {
-                        // nanos: t.timestamp_nanos() as i32, // ugly hack
-                        ..Default::default() // all default, just for debug.
+                        seconds: t.timestamp(),
+                        nanos: (t.timestamp_nanos() % 1_000_000) as i32,
+                        ..Default::default()
                     }),
                     None => None,
                 };
@@ -491,18 +502,4 @@ impl shim::Task for Service {
         self.exit.signal();
         Ok(Empty::default())
     }
-}
-
-fn err_mapping(e: RuncError) -> (Code, String) {
-    (
-        match e {
-            RuncError::BundleExtractFailed(_) => Code::FAILED_PRECONDITION,
-            RuncError::NotFound => Code::NOT_FOUND,
-            RuncError::Unimplemented(_) => Code::UNIMPLEMENTED,
-            RuncError::InvalidCommand(_) | RuncError::CommandFailed { .. } => Code::ABORTED,
-            RuncError::CommandTimeout(_) => Code::DEADLINE_EXCEEDED,
-            _ => Code::UNKNOWN,
-        },
-        e.to_string(),
-    )
 }

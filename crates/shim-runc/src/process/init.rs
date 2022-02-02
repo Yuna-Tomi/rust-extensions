@@ -20,6 +20,7 @@
 
 use super::config::{CreateConfig, ExecConfig, StdioConfig};
 use super::fifo::Fifo;
+use super::io::ProcessIO;
 use super::state::ProcessState;
 use super::traits::{ContainerProcess, InitState, Process};
 use crate::options::oci::Options;
@@ -28,18 +29,12 @@ use chrono::Utc;
 use containerd_runc_rust as runc;
 use futures::executor;
 use log::error;
-use nix::fcntl::OFlag;
 use runc::options::KillOpts;
 use runc::RuncAsyncClient;
 use std::fs::OpenOptions;
 use std::io::{self, Read};
 use std::path::Path;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-
-use crate::dbg::*;
-
-const RUNTIME_NOT_FOUND_MSG: &str = "runtime not found, should be set";
 
 /// Init process for a container
 #[derive(Debug)]
@@ -51,16 +46,15 @@ pub struct InitProcess {
 
     wait_block: Option<tokio::sync::oneshot::Receiver<()>>,
 
+    // This struct must contain tokio runtime to enable
+    pub tokio_runtime: tokio::runtime::Runtime,
     pub work_dir: String,
     pub id: String,
     pub bundle: String,
     // FIXME: suspended for difficulties
     // console: ???,
     // platform: ???,
-
-    // FIXME: suspended for difficulties
-    // io: Option<super::io::ProcessIO>,
-    // runtime: Option<RuncAsyncClient>,
+    io: Option<Arc<ProcessIO>>,
     runtime: Arc<RuncAsyncClient>,
 
     /// The pausing state
@@ -116,6 +110,10 @@ impl InitProcess {
             terminal: config.terminal,
         };
 
+        let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+
         Ok(Self {
             mu: Arc::default(),
             state: ProcessState::Unknown,
@@ -127,7 +125,8 @@ impl InitProcess {
                 .unwrap(),
             id: config.id,
             bundle: config.bundle,
-            // io: None,
+            io: None,
+            tokio_runtime,
             runtime: Arc::new(runtime),
             stdin: None,
             stdio,
@@ -149,19 +148,18 @@ impl InitProcess {
         let opts = runc::options::CreateOpts {
             pid_file: Some(pid_file.clone()),
             no_pivot: self.no_pivot_root,
-            .. Default::default()
+            ..Default::default()
         };
 
         if config.terminal {
-            panic!("unimplemented");
+            unimplemented!()
             // FIXME: using console is suspended for difficulties
         } else {
             // note that io contains nothing until this time, then we can insert new ProcessIO certainly.
             // FIXME: process io settings is suspended for difficulties
-
             // let proc_io = ProcessIO::new(&self.id, self.io_uid, self.io_gid, self.stdio.clone())?;
             // opts = opts.io(proc_io.io().unwrap());
-            // let _ = self.io.get_or_insert(proc_io);
+            // let _ = self.io.get_or_insert(Arc::new(proc_io));
         }
 
         // FIXME: apply appropriate error
@@ -183,42 +181,35 @@ impl InitProcess {
     // open another end in copy_pipes() or copy_console()
     // Note that we have WaitGroup in some crate like crossbeam,
     // but this style may be more comprehensive.
-    #[tokio::main]
-    async fn create_and_io_preparation(
+    fn create_and_io_preparation(
         &mut self,
         config: CreateConfig,
         opts: runc::options::CreateOpts,
     ) -> std::io::Result<()> {
-        let CreateConfig {
-            id,
-            bundle,
-            // terminal,
-            // stdin,
-            ..
-        } = config;
+        self.tokio_runtime.block_on(async {
+            let CreateConfig {
+                id,
+                bundle,
+                // terminal,
+                // stdin,
+                ..
+            } = config;
 
-        let runtime = Arc::clone(&self.runtime);
-        let create = tokio::spawn(async move { runtime.create(&id, bundle, Some(&opts)).await });
+            let runtime = Arc::clone(&self.runtime);
+            let create =
+                tokio::spawn(async move { runtime.create(&id, bundle, Some(&opts)).await });
 
-        // FIXME: need task corresponds to openStdin() in Go
-        // see https://github.com/containerd/containerd/blob/main/pkg/process/init.go#L178
-        // let open_stdin = tokio::spawn(...);
+            // FIXME: need task corresponds to openStdin() in Go
+            // see https://github.com/containerd/containerd/blob/main/pkg/process/init.go#L178
+            // let open_stdin = tokio::spawn(...);
 
-        // FIXME: need task corresponds to Copy() in Go
-        // see https://github.com/containerd/containerd/blob/main/pkg/process/init.go#L178
-        // let open_stdin = tokio::spawn(...);
+            // FIXME: need task corresponds to Copy() in Go
+            // see https://github.com/containerd/containerd/blob/main/pkg/process/init.go#L178
+            // let open_stdin = tokio::spawn(...);
 
-        create
-            .await
-            .map_err(|e| {
-                debug_log!("runtime create failed: {:#?}", e);
-                e
-            })?
-            .map_err(|e| {
-                debug_log!("{}", e);
-                std::io::ErrorKind::Other
-            })?;
-        Ok(())
+            create.await?.map_err(|_| std::io::ErrorKind::Other)?;
+            Ok::<(), std::io::Error>(())
+        })
     }
 
     pub fn start(&mut self) -> io::Result<()> {

@@ -180,58 +180,37 @@ impl Container {
         })
     }
 
-    // pub fn all(&self) /* -> [] */
-    // {
-    //     match self.mu.lock() {
-    //         Ok(m) => {}
-    //         Err(e) => {}
-    //     }
-    // }
+    pub fn all(&self) {
+        unimplemented!()
+    }
 
-    // pub fn execd_processes(&self) /* -> [] */
-    // {
-    //     match self.mu.lock() {
-    //         Ok(m) => {}
-    //         Err(e) => {}
-    //     }
-    // }
+    pub fn execd_processes(&self) {
+        unimplemented!()
+    }
 
     pub fn pid(&self) -> isize {
         let _m = self.mu.lock().unwrap();
         self.process_self.pid()
     }
 
-    // pub fn cgroup(&self) /* -> [] */
-    // {
-    //     match self.mu.lock() {
-    //         Ok(m) => {}
-    //         Err(e) => {}
-    //     }
-    // }
+    pub fn cgroup(&self) /* -> [] */
+    {
+        unimplemented!()
+    }
 
-    // pub fn cgroup_set(&self) /* -> [] */
-    // {
-    //     match self.mu.lock() {
-    //         Ok(m) => {}
-    //         Err(e) => {}
-    //     }
-    // }
+    pub fn cgroup_set(&self) /* -> [] */
+    {
+        unimplemented!()
+    }
 
-    // pub fn reserve_process(&self) /* -> [] */
-    // {
-    //     match self.mu.lock() {
-    //         Ok(m) => {}
-    //         Err(e) => {}
-    //     }
-    // }
+    pub fn reserve_process(&self) {
+        unimplemented!()
+    }
 
-    // pub fn process_add(&self) /* -> [] */
-    // {
-    //     match self.mu.lock() {
-    //         Ok(m) => {}
-    //         Err(e) => {}
-    //     }
-    // }
+    pub fn process_add(&self) /* -> [] */
+    {
+        unimplemented!()
+    }
 
     pub fn process_remove(&mut self, id: &str) -> Option<InitProcess> {
         let _m = self.mu.lock().unwrap();
@@ -294,27 +273,19 @@ impl Container {
     }
 
     pub fn exec(&self) -> Result<(), Box<dyn std::error::Error>> {
-        Err(Box::new(ttrpc::Error::Others(
-            "not implemented yet".to_string(),
-        )))
+        unimplemented!()
     }
 
     pub fn pause(&self) -> Result<(), Box<dyn std::error::Error>> {
-        Err(Box::new(ttrpc::Error::Others(
-            "not implemented yet".to_string(),
-        )))
+        unimplemented!()
     }
 
     pub fn resume(&self) -> Result<(), Box<dyn std::error::Error>> {
-        Err(Box::new(ttrpc::Error::Others(
-            "not implemented yet".to_string(),
-        )))
+        unimplemented!()
     }
 
     pub fn resize_pty(&self) -> Result<(), Box<dyn std::error::Error>> {
-        Err(Box::new(ttrpc::Error::Others(
-            "not implemented yet".to_string(),
-        )))
+        unimplemented!()
     }
 
     pub fn kill(&mut self, req: &KillRequest) -> io::Result<()> {
@@ -323,27 +294,19 @@ impl Container {
     }
 
     pub fn close_io(&self) -> Result<(), Box<dyn std::error::Error>> {
-        Err(Box::new(ttrpc::Error::Others(
-            "not implemented yet".to_string(),
-        )))
+        unimplemented!()
     }
 
     pub fn checkpoint(&self) -> Result<(), Box<dyn std::error::Error>> {
-        Err(Box::new(ttrpc::Error::Others(
-            "not implemented yet".to_string(),
-        )))
+        unimplemented!()
     }
 
     pub fn update(&self) -> Result<(), Box<dyn std::error::Error>> {
-        Err(Box::new(ttrpc::Error::Others(
-            "not implemented yet".to_string(),
-        )))
+        unimplemented!()
     }
 
     pub fn has_pid(&self) -> Result<(), Box<dyn std::error::Error>> {
-        Err(Box::new(ttrpc::Error::Others(
-            "not implemented yet".to_string(),
-        )))
+        unimplemented!()
     }
 }
 

@@ -45,10 +45,9 @@ use crate::utils::{JSON, TEXT};
 use std::fmt::{self, Display};
 use std::io::Write;
 use std::path::Path;
-use std::process::{Child, ExitStatus, Output, Stdio};
+use std::process::{ExitStatus, Output, Stdio};
 use std::time::Duration;
 use tempfile::NamedTempFile;
-use tokio::time;
 
 use dbg::*;
 
@@ -253,7 +252,6 @@ impl RuncClient {
         let stderr = String::from_utf8(result.stderr).unwrap();
         if forget {
             // reserve fds of pipes for after use
-            // this forget surely enables fds outside this function
             std::mem::forget(cmd);
         }
         if status.success() {
@@ -299,13 +297,12 @@ impl RuncClient {
         let mut cmd = self.command(&args)?;
         debug_log!("command is set");
         match opts {
-            Some(CreateOpts { io: Some(_io), .. }) => unsafe {
-                _io.set(&mut cmd);
+            Some(CreateOpts { io: Some(_io), .. }) => {
+                _io.set(&mut cmd).map_err(Error::UnavailableIO)?;
                 let res = self.launch(cmd, true, true)?;
-                debug_log!("closing write end for stdout/err...");
                 _io.close_after_start();
                 Ok(res)
-            },
+            }
             _ => self.launch(cmd, true, false),
         }
     }
@@ -342,7 +339,7 @@ impl RuncClient {
         let mut cmd = self.command(&args)?;
         let forget = match opts {
             Some(ExecOpts { io: Some(_io), .. }) => {
-                unsafe { _io.set(&mut cmd) }
+                _io.set(&mut cmd).map_err(Error::UnavailableIO)?;
                 true
             }
             _ => false,
@@ -364,17 +361,17 @@ impl RuncClient {
     }
 
     /// List all containers associated with this runc instance
-    // pub fn list(&self) -> Result<Vec<Container>> {
-    //     let args = ["list".to_string(), "--format-json".to_string()];
-    //     let output = self.command(&args, false)?.output;
-    //     let output = output.trim();
-    //     // Ugly hack to work around golang
-    //     Ok(if output == "null" {
-    //         Vec::new()
-    //     } else {
-    //         serde_json::from_str(output).map_err(Error::JsonDeserializationFailed)?
-    //     })
-    // }
+    pub fn list(&self) -> Result<Vec<Container>> {
+        let args = ["list".to_string(), "--format-json".to_string()];
+        let res = self.launch(self.command(&args)?, true, false)?;
+        let output = res.output.trim();
+        // Ugly hack to work around golang
+        Ok(if output == "null" {
+            Vec::new()
+        } else {
+            serde_json::from_str(output).map_err(Error::JsonDeserializationFailed)?
+        })
+    }
 
     /// Pause a container
     pub fn pause(&self, id: &str) -> Result<()> {
@@ -382,23 +379,6 @@ impl RuncClient {
         let _ = self.launch(self.command(&args)?, true, false)?;
         Ok(())
     }
-
-    /// List all the processes inside the container, returning their pids
-    // pub fn ps(&self, id: &str) -> Result<Vec<usize>> {
-    //     let args = [
-    //         "ps".to_string(),
-    //         "--format-json".to_string(),
-    //         id.to_string(),
-    //     ];
-    //     let output = self.command(&args)?;
-    //     let output = output.trim();
-    //     // Ugly hack to work around golang
-    //     Ok(if output == "null" {
-    //         Vec::new()
-    //     } else {
-    //         serde_json::from_str(output).map_err(Error::JsonDeserializationFailed)?
-    //     })
-    // }
 
     pub fn restore(&self) -> Result<()> {
         Err(Error::Unimplemented("restore".to_string()))
@@ -427,7 +407,7 @@ impl RuncClient {
         debug_log!("command is set");
         let forget = match opts {
             Some(CreateOpts { io: Some(_io), .. }) => {
-                unsafe { _io.set(&mut cmd) }
+                _io.set(&mut cmd).map_err(Error::UnavailableIO)?;
                 true
             }
             _ => false,
@@ -450,19 +430,6 @@ impl RuncClient {
         let res = self.launch(self.command(&args)?, true, false)?;
         Ok(serde_json::from_str(&res.output).map_err(Error::JsonDeserializationFailed)?)
     }
-
-    /// Return the latest statistics for a container
-    // pub fn stats(&self, id: &str) -> Result<Stats> {
-    //     let args = ["events".to_string(), "--stats".to_string(), id.to_string()];
-    //     let output = self.command(&args, true)?.output;
-    //     let event: Event =
-    //         serde_json::from_str(&output).map_err(Error::JsonDeserializationFailed)?;
-    //     if let Some(stats) = event.stats {
-    //         Ok(stats)
-    //     } else {
-    //         Err(Error::MissingContainerStats)
-    //     }
-    // }
 
     /// Update a container with the provided resource spec
     pub fn update(&self, id: &str, resources: &LinuxResources) -> Result<()> {
@@ -503,7 +470,6 @@ impl RuncAsyncClient {
         config.build_async()
     }
 
-    #[cfg(target_os = "linux")]
     pub fn command(&self, args: &[String]) -> Result<tokio::process::Command> {
         debug_log!("command setting...");
         let args = [&self.0.args()?, args].concat();
@@ -563,11 +529,6 @@ impl RuncAsyncClient {
         }
     }
 
-    #[cfg(not(target_os = "linux"))]
-    pub async fn command(&self, args: &[String]) -> Result<()> {
-        Err(Error::Unimplemented("command".to_string()))
-    }
-
     pub async fn checkpoint(&self) -> Result<()> {
         Err(Error::Unimplemented("checkpoint".to_string()))
     }
@@ -591,10 +552,11 @@ impl RuncAsyncClient {
         match opts {
             Some(CreateOpts { io: Some(_io), .. }) => {
                 debug_log!("io setting...");
-                unsafe { _io.set_tk(&mut cmd) }
+                _io.set_tk(&mut cmd).map_err(Error::UnavailableIO)?;
                 let (tx, rx) = tokio::sync::oneshot::channel::<Exit>();
                 let start = MONITOR.start(cmd, tx, true);
                 let wait = MONITOR.wait(rx);
+                _io.close_after_start();
                 let (
                     Output {
                         status,
@@ -603,7 +565,6 @@ impl RuncAsyncClient {
                     },
                     _,
                 ) = tokio::try_join!(start, wait).map_err(Error::InvalidCommand)?;
-                unsafe { _io.close_after_start() }
 
                 let stdout = String::from_utf8(stdout).unwrap();
                 let stderr = String::from_utf8(stderr).unwrap();
@@ -639,7 +600,7 @@ impl RuncAsyncClient {
     }
 
     /// Execute an additional process inside the container
-    pub async fn exec(&self, id: &str, spec: &Process, opts: Option<&ExecOpts>) -> Result<()> {
+    pub async fn exec(&self, _id: &str, _spec: &Process, _opts: Option<&ExecOpts>) -> Result<()> {
         Err(Error::Unimplemented("exec".to_string()))
     }
 
@@ -963,7 +924,6 @@ mod tests {
             eprintln!("ok_runc succeeded.");
         });
 
-        let opts = CreateOpts::new();
         let fail_runc = fail_async_client();
         let fail_task = tokio::spawn(async move {
             match fail_runc.start("fake-id").await {
@@ -1012,49 +972,6 @@ mod tests {
                 .create("fake-id", "fake-bundle", Some(&opts))
                 .await
             {
-                Ok(_) => panic!("fail_runc returned exit status 0."),
-                Err(Error::CommandFailed {
-                    status,
-                    stdout,
-                    stderr,
-                }) => {
-                    if status.code().unwrap() == 1 && stdout.is_empty() && stderr.is_empty() {
-                        eprintln!("fail_runc succeeded.");
-                    } else {
-                        panic!("unexpected outputs from fail_runc.")
-                    }
-                }
-                Err(e) => panic!("unexpected error from fail_runc: {:?}", e),
-            }
-        })
-        .await
-        .expect("tokio spawn falied.");
-    }
-
-    #[tokio::test]
-    async fn test_async_exec() {
-        let opts = ExecOpts::new();
-        let proc = dummy_process();
-        let ok_runc = RuncConfig::new()
-            .command(CMD_TRUE)
-            .build_async()
-            .expect("unable to create runc instance");
-        tokio::spawn(async move {
-            ok_runc
-                .exec("fake-id", &proc, Some(&opts))
-                .await
-                .expect("true failed.");
-            eprintln!("ok_runc succeeded.");
-        });
-
-        let opts = ExecOpts::new();
-        let proc = dummy_process();
-        let fail_runc = RuncConfig::new()
-            .command(CMD_FALSE)
-            .build_async()
-            .expect("unable to create runc instance");
-        tokio::spawn(async move {
-            match fail_runc.exec("fake-id", &proc, Some(&opts)).await {
                 Ok(_) => panic!("fail_runc returned exit status 0."),
                 Err(Error::CommandFailed {
                     status,

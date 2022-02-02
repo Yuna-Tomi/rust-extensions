@@ -13,54 +13,61 @@
    see the license for the specific language governing permissions and
    limitations under the license.
 */
-use dyn_clone::DynClone;
 use nix::fcntl::OFlag;
 use nix::sys::stat::Mode;
 use nix::unistd::{Gid, Uid};
 use std::fmt::{self, Debug, Formatter};
 use std::fs::File;
 use std::os::unix::io::FromRawFd;
-use std::os::unix::prelude::RawFd;
-use std::process::{Command, Stdio};
+use std::os::unix::prelude::{AsRawFd, RawFd};
+use std::process::Command;
+use std::sync::Mutex;
 
 use crate::dbg::*;
 
 /// Users have to [`std::mem::forget()`] to prevent from closing fds when this return value drops.
 /// Especially, in such situation, you have to [`std::mem::forget()`] the [`std::process::Command`] you passed to the [`set()`].
-pub trait RuncIO: DynClone + Sync + Send {
-    fn stdin(&self) -> Option<RawFd> {
-        None
-    }
-    fn stdout(&self) -> Option<RawFd> {
-        None
-    }
-    fn stderr(&self) -> Option<RawFd> {
+pub trait RuncIO: Sync + Send {
+    /// Return write side of stdin
+    fn stdin(&self) -> Option<File> {
         None
     }
 
-    fn close(&mut self) {
+    /// Return read side of stdout
+    fn stdout(&self) -> Option<File> {
+        None
+    }
+
+    /// Return read side of stderr
+    fn stderr(&self) -> Option<File> {
+        None
+    }
+
+    fn close(&self) {
         debug_log!("close unimplemented!");
         panic!("close unimplemented!");
     }
 
-    unsafe fn set(&self, cmd: &mut Command) {
+    /// Set IO for passed command.
+    /// Read side of stdin, write side of stdout and write side of stderr should be provided to command.
+    fn set(&self, _cmd: &mut Command) -> std::io::Result<()> {
         debug_log!("set unimplemented!");
         panic!("set unimplemented!");
     }
 
     // tokio version of set()
-    unsafe fn set_tk(&self, cmd: &mut tokio::process::Command) {
+    fn set_tk(&self, _cmd: &mut tokio::process::Command) -> std::io::Result<()> {
         debug_log!("set_tk unimplemented!");
         panic!("set_tk unimplemented!");
     }
 
-    unsafe fn close_after_start(&self) {
+    fn close_after_start(&self) {
         debug_log!("close_after_start unimplemented!");
         panic!("close_after_start unimplemented!");
     }
 }
 
-dyn_clone::clone_trait_object!(RuncIO);
+// dyn_clone::clone_trait_object!(RuncIO);
 
 impl Debug for dyn RuncIO {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
@@ -86,7 +93,55 @@ impl Default for IOOption {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+/// This struct represents pipe that can be used to transfer
+/// stdio inputs and outputs
+/// when one side of closed, this struct represent it with [`None`]
+#[derive(Debug)]
+pub struct Pipe {
+    // Might be ugly hack: using mutex in order to take rd/wr under immutable [`Pipe`]
+    rd: Mutex<Option<File>>,
+    wr: Mutex<Option<File>>,
+}
+
+impl Pipe {
+    pub fn new() -> std::io::Result<Self> {
+        let (r, w) = nix::unistd::pipe()?;
+        let (rd, wr) = unsafe {
+            (
+                Mutex::new(Some(File::from_raw_fd(r))),
+                Mutex::new(Some(File::from_raw_fd(w))),
+            )
+        };
+        Ok(Self { rd, wr })
+    }
+
+    pub fn take_read(&self) -> Option<File> {
+        let mut m = self.rd.lock().unwrap();
+        m.take()
+    }
+
+    pub fn take_write(&self) -> Option<File> {
+        let mut m = self.wr.lock().unwrap();
+        m.take()
+    }
+
+    pub fn close_read(&self) {
+        let mut m = self.rd.lock().unwrap();
+        let _ = m.take();
+    }
+
+    pub fn close_write(&self) {
+        let mut m = self.wr.lock().unwrap();
+        let _ = m.take();
+    }
+
+    pub fn close(&self) {
+        self.close_read();
+        self.close_write();
+    }
+}
+
+#[derive(Debug)]
 pub struct RuncPipedIO {
     stdin: Option<Pipe>,
     stdout: Option<Pipe>,
@@ -99,7 +154,12 @@ impl RuncPipedIO {
         let gid = Some(Gid::from_raw(gid as u32));
         let stdin = if opts.open_stdin {
             let pipe = Pipe::new()?;
-            nix::unistd::fchown(pipe.read_fd, uid, gid)?;
+            {
+                let m = pipe.rd.lock().unwrap();
+                if let Some(f) = m.as_ref() {
+                    nix::unistd::fchown(f.as_raw_fd(), uid, gid)?;
+                }
+            }
             Some(pipe)
         } else {
             None
@@ -107,7 +167,12 @@ impl RuncPipedIO {
 
         let stdout = if opts.open_stdout {
             let pipe = Pipe::new()?;
-            nix::unistd::fchown(pipe.write_fd, uid, gid)?;
+            {
+                let m = pipe.wr.lock().unwrap();
+                if let Some(f) = m.as_ref() {
+                    nix::unistd::fchown(f.as_raw_fd(), uid, gid)?;
+                }
+            }
             Some(pipe)
         } else {
             None
@@ -115,7 +180,12 @@ impl RuncPipedIO {
 
         let stderr = if opts.open_stderr {
             let pipe = Pipe::new()?;
-            nix::unistd::fchown(pipe.write_fd, uid, gid)?;
+            {
+                let m = pipe.wr.lock().unwrap();
+                if let Some(f) = m.as_ref() {
+                    nix::unistd::fchown(f.as_raw_fd(), uid, gid)?;
+                }
+            }
             Some(pipe)
         } else {
             None
@@ -130,182 +200,152 @@ impl RuncPipedIO {
 }
 
 impl RuncIO for RuncPipedIO {
-    fn stdin(&self) -> Option<RawFd> {
-        if let Some(stdin) = &self.stdin {
-            Some(stdin.write_fd)
+    fn stdin(&self) -> Option<File> {
+        if let Some(ref stdin) = self.stdin {
+            stdin.take_write()
         } else {
             None
         }
     }
 
-    fn stdout(&self) -> Option<RawFd> {
-        if let Some(stdout) = &self.stdout {
-            Some(stdout.read_fd)
+    fn stdout(&self) -> Option<File> {
+        if let Some(ref stdout) = self.stdout {
+            stdout.take_read()
         } else {
             None
         }
     }
 
-    fn stderr(&self) -> Option<RawFd> {
-        if let Some(stderr) = &self.stderr {
-            Some(stderr.read_fd)
+    fn stderr(&self) -> Option<File> {
+        if let Some(ref stderr) = self.stderr {
+            stderr.take_read()
         } else {
             None
         }
     }
 
-    fn close(&mut self) {
-        if let Some(stdin) = &self.stdin {
-            unsafe { stdin.close() };
+    fn close(&self) {
+        if let Some(ref stdin) = self.stdin {
+            stdin.close();
         }
-        if let Some(stdout) = &self.stdout {
-            unsafe { stdout.close() };
+        if let Some(ref stdout) = self.stdout {
+            stdout.close();
         }
-        if let Some(stderr) = &self.stderr {
-            unsafe { stderr.close() };
-        }
-    }
-
-    unsafe fn set(&self, cmd: &mut Command) {
-        if let Some(stdin) = &self.stdin {
-            let f = File::from_raw_fd(stdin.read_fd);
-            debug_log!("set read end for stdin: {:?}", f);
-            cmd.stdin(f);
-        }
-        if let Some(stdout) = &self.stdout {
-            let f = File::from_raw_fd(stdout.write_fd);
-            debug_log!("set write end for stdout: {:?}", f);
-            cmd.stdout(f);
-        }
-        if let Some(stderr) = &self.stderr {
-            let f = File::from_raw_fd(stderr.write_fd);
-            debug_log!("set write end for stderr: {:?}", f);
-            cmd.stderr(f);
+        if let Some(ref stderr) = self.stderr {
+            stderr.close();
         }
     }
 
-    unsafe fn set_tk(&self, cmd: &mut tokio::process::Command) {
-        if let Some(stdin) = &self.stdin {
-            let f = File::from_raw_fd(stdin.read_fd);
-            debug_log!("set read end for stdin: {:?}", f);
-            cmd.stdin(f);
+    /// Note that this internally use [`std::fs::File`]'s [`try_clone()`].
+    /// Thus, the files passed to commands will be not closed after command exit.
+    fn set(&self, cmd: &mut Command) -> std::io::Result<()> {
+        if let Some(ref p) = self.stdin {
+            let m = p.rd.lock().unwrap();
+            if let Some(stdin) = &*m {
+                let f = stdin.try_clone()?;
+                debug_log!("set read end for stdin: {:?}", f);
+                cmd.stdin(f);
+            }
         }
-        if let Some(stdout) = &self.stdout {
-            let f = File::from_raw_fd(stdout.write_fd);
-            debug_log!("set write end for stdout: {:?}", f);
-            cmd.stdout(f);
+
+        if let Some(ref p) = self.stdout {
+            let m = p.wr.lock().unwrap();
+            if let Some(f) = &*m {
+                let f = f.try_clone()?;
+                debug_log!("set read end for stdout: {:?}", f);
+                cmd.stdin(f);
+            }
         }
-        if let Some(stderr) = &self.stderr {
-            let f = File::from_raw_fd(stderr.write_fd);
-            debug_log!("set write end for stderr: {:?}", f);
-            cmd.stderr(f);
+
+        if let Some(ref p) = self.stderr {
+            let m = p.wr.lock().unwrap();
+            if let Some(f) = &*m {
+                let f = f.try_clone()?;
+                debug_log!("set read end for stderr: {:?}", f);
+                cmd.stdin(f);
+            }
         }
+        Ok(())
+    }
+
+    fn set_tk(&self, cmd: &mut tokio::process::Command) -> std::io::Result<()> {
+        if let Some(ref p) = self.stdin {
+            let m = p.rd.lock().unwrap();
+            if let Some(stdin) = &*m {
+                let f = stdin.try_clone()?;
+                debug_log!("set read end for stdin: {:?}", f);
+                cmd.stdin(f);
+            }
+        }
+
+        if let Some(ref p) = self.stdout {
+            let m = p.wr.lock().unwrap();
+            if let Some(f) = &*m {
+                let f = f.try_clone()?;
+                debug_log!("set read end for stdout: {:?}", f);
+                cmd.stdin(f);
+            }
+        }
+
+        if let Some(ref p) = self.stderr {
+            let m = p.wr.lock().unwrap();
+            if let Some(f) = &*m {
+                let f = f.try_clone()?;
+                debug_log!("set read end for stderr: {:?}", f);
+                cmd.stdin(f);
+            }
+        }
+        Ok(())
     }
 
     /// closing only write side (should be stdout/err "from" runc process)
-    unsafe fn close_after_start(&self) {
-        if let Some(stdout) = &self.stdout {
-            stdout.close_write()
+    fn close_after_start(&self) {
+        if let Some(ref p) = self.stdout {
+            p.close_write();
         }
-        if let Some(stderr) = &self.stderr {
-            stderr.close_write()
+        if let Some(ref p) = self.stderr {
+            p.close_write();
         }
     }
 }
 
 // IO setup for /dev/null use with runc
-#[derive(Debug, Clone, Default)]
+#[derive(Debug)]
 pub struct NullIO {
-    dev_null_fd: RawFd,
+    dev_null: RawFd,
 }
 
 impl NullIO {
     pub fn new() -> std::io::Result<Self> {
-        let dev_null_fd = nix::fcntl::open("/dev/null", OFlag::O_RDONLY, Mode::empty())?;
-        Ok(Self { dev_null_fd })
+        let fd = nix::fcntl::open("/dev/null", OFlag::O_RDONLY, Mode::empty())?;
+        // let dev_null = unsafe { Some(std::fs::File::from_raw_fd(fd)) };
+        // Ok(Self { dev_null })
+        Ok(Self { dev_null: fd })
     }
 }
 
 impl RuncIO for NullIO {
-    unsafe fn set(&self, cmd: &mut Command) {
-        // let f = File::from_raw_fd(self.dev_null_fd);
-        // debug_log!("set write end for stdout: {:?}", f);
-        // cmd.stdout(f);
-        // let f = File::from_raw_fd(self.dev_null_fd);
-        // debug_log!("set write end for stderr: {:?}", f);
-        // cmd.stderr(f);
-
-        cmd.stdout(Stdio::null());
-        cmd.stderr(Stdio::null());
+    fn set(&self, cmd: &mut Command) -> std::io::Result<()> {
+        let null = unsafe { std::fs::File::from_raw_fd(self.dev_null) };
+        cmd.stdout(null.try_clone()?);
+        cmd.stderr(null.try_clone()?);
+        std::mem::forget(null);
+        Ok(())
     }
 
-    unsafe fn set_tk(&self, cmd: &mut tokio::process::Command) {
-        // let f = File::from_raw_fd(self.dev_null_fd);
-        // debug_log!("set write end for stdout: {:?}", f);
-        // cmd.stdout(f);
-        // let f = File::from_raw_fd(self.dev_null_fd);
-        // debug_log!("set write end for stderr: {:?}", f);
-        // cmd.stderr(f);
-        cmd.stdout(Stdio::null());
-        cmd.stderr(Stdio::null());
+    fn set_tk(&self, cmd: &mut tokio::process::Command) -> std::io::Result<()> {
+        let null = unsafe { std::fs::File::from_raw_fd(self.dev_null) };
+        cmd.stdout(null.try_clone()?);
+        cmd.stderr(null.try_clone()?);
+        std::mem::forget(null);
+        Ok(())
     }
 
-    fn close(&mut self) {
-        let _ = unsafe { File::from_raw_fd(self.dev_null_fd) };
+    fn close(&self) {
+        let _ = unsafe { std::fs::File::from_raw_fd(self.dev_null) };
     }
 
-    unsafe fn close_after_start(&self) {
-        drop(File::from_raw_fd(self.dev_null_fd));
+    fn close_after_start(&self) {
+        self.close();
     }
 }
-
-#[derive(Debug, Clone)]
-pub struct Pipe {
-    // might be ugly hack: use rawfd, insted of file to allow clone
-    read_fd: RawFd,
-    write_fd: RawFd,
-}
-
-impl Pipe {
-    pub fn new() -> std::io::Result<Self> {
-        let (read_fd, write_fd) = nix::unistd::pipe()?;
-        unsafe {
-            let fr = File::from_raw_fd(read_fd);
-            let fw = File::from_raw_fd(write_fd);
-            debug_log!("read end for pipe: {:?}", fr);
-            debug_log!("write end for pipe: {:?}", fw);
-            std::mem::forget(fr);
-            std::mem::forget(fw);
-            //     std::mem::forget(File::from_raw_fd(read_fd));
-            //     std::mem::forget(File::from_raw_fd(write_fd));
-        }
-        Ok(Self { read_fd, write_fd })
-    }
-
-    pub fn read_fd(&self) -> RawFd {
-        self.read_fd
-    }
-
-    pub fn write_fd(&self) -> RawFd {
-        self.write_fd
-    }
-
-    unsafe fn close_write(&self) {
-        drop(File::from_raw_fd(self.write_fd));
-    }
-
-    unsafe fn close_read(&self) {
-        drop(File::from_raw_fd(self.read_fd));
-    }
-
-    pub unsafe fn close(&self) {
-        self.close_read();
-        self.close_write();
-    }
-}
-
-// impl Drop for Pipe {
-//     fn drop(&mut self) {
-//         unsafe { self.close() }
-//     }
-// }

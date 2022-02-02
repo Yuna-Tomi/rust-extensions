@@ -64,6 +64,9 @@ pub enum Error {
         stderr: String,
     },
 
+    #[error("Runc IO unavailable: {0}")]
+    UnavailableIO(io::Error),
+
     #[error("Runc command timed out: {0}")]
     CommandTimeout(tokio::time::error::Elapsed),
 

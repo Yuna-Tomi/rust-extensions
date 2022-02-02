@@ -37,9 +37,9 @@ use crate::options::Args;
 use crate::utils::{self, DEBUG, DEFAULT_COMMAND, LOG, LOG_FORMAT, ROOT, ROOTLESS, SYSTEMD_CGROUP};
 use crate::LogFormat;
 
+use crate::dbg::*;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use crate::dbg::*;
 
 /// Inner struct for runc configuration
 #[derive(Debug, Clone, Default)]
@@ -135,8 +135,12 @@ impl RuncConfig {
     }
 
     pub fn build(&mut self) -> Result<Runc, Error> {
-        let command = utils::binary_path(self.command.clone().unwrap_or(PathBuf::from(DEFAULT_COMMAND)))
-            .ok_or(Error::NotFound)?;
+        let command = utils::binary_path(
+            self.command
+                .clone()
+                .unwrap_or(PathBuf::from(DEFAULT_COMMAND)),
+        )
+        .ok_or(Error::NotFound)?;
         Ok(Runc {
             command,
             root: self.root.clone(),

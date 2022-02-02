@@ -80,6 +80,8 @@ impl Fifo {
         }
         opts.mode(0).custom_flags(flag.bits());
 
+        // FIXME:
+        // following Go's implementation, we have to prepare file on other thread.
         let file = opts.open(&path).await.map_err(|e| {
             debug_log!("fifo access open failed: {}", e);
             e
@@ -171,7 +173,7 @@ impl Handler {
     where
         P: AsRef<Path>,
     {
-        // here, we use fcntl directly because O_PATH is not compatible for OpenOptions
+        // here, we use fcntl directly because O_PATH is not suitable for OpenOptions
         // see https://rust-lang.github.io/rfcs/1252-open-options.html#no-access-mode-set
         let fd = fcntl::open(path.as_ref(), OFlag::O_PATH, Mode::empty())?;
         let file = unsafe { async_std::fs::File::from_raw_fd(fd) };
