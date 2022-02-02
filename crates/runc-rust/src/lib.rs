@@ -182,22 +182,22 @@ impl RuncConfig {
     //     self
     // }
 
-    pub fn rootless(mut self, rootless: bool) -> Self {
+    pub fn rootless(&mut self, rootless: bool) -> &mut Self {
         self.0.rootless(rootless);
         self
     }
 
-    pub fn set_pgid(mut self, set_pgid: bool) -> Self {
+    pub fn set_pgid(&mut self, set_pgid: bool) -> &mut Self {
         self.0.set_pgid(set_pgid);
         self
     }
 
-    pub fn rootless_auto(mut self) -> Self {
+    pub fn rootless_auto(&mut self) -> &mut Self {
         self.0.rootless_auto();
         self
     }
 
-    pub fn timeout(mut self, millis: u64) -> Self {
+    pub fn timeout(&mut self, millis: u64) -> &mut Self {
         self.0.timeout(millis);
         self
     }
@@ -308,7 +308,6 @@ impl RuncClient {
     }
 
     /// Delete a container
-    /// If you set drop_pipe, you can use the pipe you set when creating container.
     pub fn delete(&self, id: &str, opts: Option<&DeleteOpts>) -> Result<()> {
         let mut args = vec!["delete".to_string()];
         if let Some(opts) = opts {
@@ -413,7 +412,6 @@ impl RuncClient {
             _ => false,
         };
 
-        // ugly hack?: is it ok to stick to run
         self.launch(self.command(&args)?, true, forget)
     }
 
@@ -1030,25 +1028,5 @@ mod tests {
         })
         .await
         .expect("tokio spawn falied.");
-    }
-
-    // Clean up: this Drop tries to remove runc binary and associated directory, then only for tests.
-    impl Drop for runc::Runc {
-        fn drop(&mut self) {
-            if let Some(root) = self.root.clone() {
-                if let Err(e) = fs::remove_dir_all(&root) {
-                    warn!("failed to cleanup root directory: {}", e);
-                }
-            }
-            if let Some(system_runc) = utils::binary_path(&self.command) {
-                if system_runc != self.command {
-                    if let Err(e) = fs::remove_file(&self.command) {
-                        warn!("failed to remove runc binary: {}", e);
-                    }
-                }
-            } else if let Err(e) = fs::remove_file(&self.command) {
-                warn!("failed to remove runc binary: {}", e);
-            }
-        }
     }
 }

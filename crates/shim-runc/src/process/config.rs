@@ -51,7 +51,7 @@ pub struct CreateConfig {
     pub stdin: String,
     pub stdout: String,
     pub stderr: String,
-    // checkout is not supported now
+    // FIXME: checkout is not supported now
     // checkpoint: String,
     // parent_checkpoint: String,
     pub options: Option<Any>,
@@ -65,13 +65,13 @@ pub struct ExecConfig {
     terminal: bool,
     stdin: String,
     stdout: String,
-    // checkout is not supported now
+    // FIXME: checkout is not supported now
     // checkpoint: String,
     // parent_checkpoint: String,
     options: Option<Any>,
 }
 
-// checkpoint is not supported now
+// FIXME: checkpoint is not supported now
 // pub struct ChecoutConfig {}
 
 #[derive(Debug, Clone, Default)]

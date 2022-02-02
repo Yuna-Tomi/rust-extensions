@@ -47,7 +47,7 @@ pub struct InitProcess {
     wait_block: Option<tokio::sync::oneshot::Receiver<()>>,
 
     // This struct must contain tokio runtime to enable
-    pub tokio_runtime: tokio::runtime::Runtime,
+    tokio_runtime: tokio::runtime::Runtime,
     pub work_dir: String,
     pub id: String,
     pub bundle: String,
@@ -66,13 +66,13 @@ pub struct InitProcess {
     // closers: Vec<???>,
     // might be ugly hack
     stdin: Option<Fifo>,
-    pub stdio: StdioConfig,
+    stdio: StdioConfig,
 
-    pub rootfs: String,
-    pub io_uid: isize,
-    pub io_gid: isize,
-    pub no_pivot_root: bool,
-    pub no_new_keyring: bool,
+    rootfs: String,
+    io_uid: isize,
+    io_gid: isize,
+    no_pivot_root: bool,
+    no_new_keyring: bool,
     // checkout is not supported now
     // pub criu_work_path: bool,
 }
