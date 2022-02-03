@@ -18,7 +18,6 @@
 // https://github.com/containerd/containerd/blob/main/pkg/process/types.go
 // https://github.com/containerd/containerd/blob/main/pkg/stdio/stdio.go
 
-
 use containerd_shim_protos as protos;
 
 use protos::shim::mount::Mount;

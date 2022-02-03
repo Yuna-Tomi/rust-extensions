@@ -3,8 +3,8 @@ use std::io::Read;
 use std::path::Path;
 use std::{fs::File, sync::Mutex};
 
-use chrono::Local;
 use once_cell::sync::Lazy;
+use time::OffsetDateTime;
 
 pub static LOG_STATIC_DBG: Lazy<Mutex<File>> = Lazy::new(|| {
     Mutex::new({
@@ -17,7 +17,7 @@ pub static LOG_STATIC_DBG: Lazy<Mutex<File>> = Lazy::new(|| {
         drop(f);
 
         let r = rand::random::<u16>();
-        let now = Local::now().format("%Y:%m:%d-%H:%M:%S").to_string();
+        let now = OffsetDateTime::now_utc().to_string();
         let logfile = Path::new(&path).join(&format!("debug-runc{}-{}.log", now, r));
         OpenOptions::new()
             .write(true)

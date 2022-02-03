@@ -23,8 +23,8 @@ pub use containerd_shim_protos as protos;
 pub use runc;
 
 pub mod v2 {
-    pub use crate::service::Service;
     pub use crate::options::oci::*;
+    pub use crate::service::Service;
 }
 
 mod container;
@@ -41,7 +41,6 @@ pub mod dbg {
     pub use std::io::Write as DbgWrite;
 }
 use dbg::*;
-
 
 fn main() {
     // all arguments will be parsed inside "run" function.

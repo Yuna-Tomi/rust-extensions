@@ -1,9 +1,9 @@
-use chrono::Local;
 use once_cell::sync::Lazy;
 use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::Path;
 use std::{fs::File, sync::Mutex};
+use time::OffsetDateTime;
 
 pub static M: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 pub static LOG_STATIC_DBG: Lazy<Mutex<File>> = Lazy::new(|| {
@@ -14,7 +14,7 @@ pub static LOG_STATIC_DBG: Lazy<Mutex<File>> = Lazy::new(|| {
         drop(f);
 
         let r = rand::random::<u16>();
-        let now = Local::now().format("%Y:%m:%d-%H:%M:%S").to_string();
+        let now = OffsetDateTime::now_utc().to_string();
         let logfile = Path::new(&path).join(&format!("debug-shim{}-{}.log", now, r));
         OpenOptions::new()
             .write(true)
@@ -31,7 +31,7 @@ pub static LOG_FILE_NAME: Lazy<String> = Lazy::new(|| {
     drop(f);
 
     let r = rand::random::<u16>();
-    let now = Local::now().format("%Y:%m:%d-%H:%M:%S").to_string();
+    let now = OffsetDateTime::now_utc().to_string();
     let logfile = Path::new(&path).join(&format!("debug-shim{}-{}.log", now, r));
     logfile.to_string_lossy().parse::<String>().unwrap()
 });

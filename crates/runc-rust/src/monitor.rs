@@ -17,8 +17,8 @@
 use std::process::Output;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use log::error;
+use time::OffsetDateTime;
 use tokio::sync::oneshot::{Receiver, Sender};
 
 use crate::dbg::*;
@@ -47,7 +47,7 @@ pub trait ProcessMonitor {
         debug_log!("command spawned {:?}, {:?}", chi, pid);
         let out = chi.wait_with_output().await?;
         debug_log!("command output {:?}", out);
-        let ts = Utc::now();
+        let ts = OffsetDateTime::now_utc();
         match tx.send(Exit {
             ts,
             pid,
@@ -88,7 +88,7 @@ impl DefaultMonitor {
 
 #[derive(Debug)]
 pub struct Exit {
-    pub ts: DateTime<Utc>,
+    pub ts: OffsetDateTime,
     pub pid: u32,
     pub status: i32,
 }

@@ -14,7 +14,6 @@
    limitations under the License.
 */
 
-
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
@@ -32,12 +31,12 @@ use protos::shim::{
     },
 };
 
-use chrono::{DateTime, Utc};
 use nix::errno::Errno;
 use nix::sys::stat;
 use nix::unistd;
 use protobuf::Message;
 use sys_mount::UnmountFlags;
+use time::OffsetDateTime;
 
 use crate::options::oci::Options;
 use crate::process::{
@@ -257,7 +256,7 @@ impl Container {
     pub fn delete(
         &mut self,
         req: &DeleteRequest,
-    ) -> io::Result<(isize, isize, Option<DateTime<Utc>>)> {
+    ) -> io::Result<(isize, isize, Option<OffsetDateTime>)> {
         {
             let p = self.process_mut(&req.exec_id)?;
             debug_log!("call InitProcess::delete(): {:?}", p);

@@ -23,19 +23,19 @@ use std::io::{self, Read};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use chrono::Utc;
 use futures::executor;
 use log::error;
 use runc::options::KillOpts;
 use runc::RuncAsyncClient;
+use time::OffsetDateTime;
 
-use crate::options::oci::Options;
-use crate::utils;
 use super::config::{CreateConfig, ExecConfig, StdioConfig};
 use super::fifo::Fifo;
 use super::io::ProcessIO;
 use super::state::ProcessState;
 use super::traits::{ContainerProcess, InitState, Process};
+use crate::options::oci::Options;
+use crate::utils;
 
 /// Init process for a container
 #[derive(Debug)]
@@ -61,7 +61,7 @@ pub struct InitProcess {
     /// The pausing state
     pausing: bool,
     status: isize,
-    exited: Option<chrono::DateTime<Utc>>,
+    exited: Option<OffsetDateTime>,
     pid: isize,
     // FIXME: suspended for difficulties
     // closers: Vec<???>,
@@ -246,7 +246,7 @@ impl InitProcess {
     pub fn exit_status(&self) -> isize {
         Process::exit_status(self)
     }
-    pub fn exited_at(&self) -> Option<chrono::DateTime<Utc>> {
+    pub fn exited_at(&self) -> Option<OffsetDateTime> {
         Process::exited_at(self)
     }
     pub fn stdio(&self) -> StdioConfig {
@@ -322,7 +322,7 @@ impl InitState for InitProcess {
 
     fn set_exited(&mut self, status: isize) {
         let _m = self.mu.lock().unwrap();
-        let time = Utc::now();
+        let time = OffsetDateTime::now_utc();
         self.state = ProcessState::Stopped;
         self.exited = Some(time);
         self.status = status;
@@ -353,7 +353,7 @@ impl Process for InitProcess {
         self.status
     }
 
-    fn exited_at(&self) -> Option<chrono::DateTime<Utc>> {
+    fn exited_at(&self) -> Option<OffsetDateTime> {
         let _m = self.mu.lock();
         self.exited
     }

@@ -14,7 +14,6 @@
    limitations under the License.
 */
 
-
 use std::collections::HashMap;
 use std::env;
 use std::sync::RwLock;
@@ -27,26 +26,26 @@ use protos::shim::{
     empty::Empty,
     shim::{
         CreateTaskRequest, CreateTaskResponse, DeleteRequest, DeleteResponse, ExecProcessRequest,
-        KillRequest, StartRequest, StartResponse, StateRequest, StateResponse,
-        WaitRequest, WaitResponse,
+        KillRequest, StartRequest, StartResponse, StateRequest, StateResponse, WaitRequest,
+        WaitResponse,
     },
 };
+use shim::ttrpc::{Code, Error, Status};
 use shim::{api, ExitSignal, TtrpcContext, TtrpcResult};
-use shim::ttrpc::{Code, Status, Error};
 
-use chrono::Utc;
 use log::{error, info};
 use once_cell::sync::Lazy;
 use protobuf::well_known_types::Timestamp;
 use protobuf::{RepeatedField, SingularPtrField};
 use runc::options::*;
 use sys_mount::UnmountFlags;
+use time::OffsetDateTime;
 
 use crate::container::{self, Container};
+use crate::dbg::*;
 use crate::options::oci::Options;
 use crate::process::state::ProcessState;
 use crate::utils;
-use crate::dbg::*;
 
 // group labels specifies how the shim groups services.
 // currently supports a runc.v2 specific .group label and the
@@ -150,10 +149,10 @@ impl shim::Shim for Service {
             Self::Error::Delete(e.to_string())
         })?;
 
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let now = Some(Timestamp {
-            seconds: now.timestamp(),
-            nanos: (now.timestamp_nanos() % 1_000_000) as i32,
+            seconds: now.unix_timestamp(),
+            nanos: now.nanosecond() as i32,
             ..Default::default()
         });
         let exited_at = SingularPtrField::from_option(now);
@@ -294,11 +293,13 @@ impl shim::Task for Service {
         let stdio = p.stdio();
         let exited_at = if let Some(exited_at) = p.exited_at() {
             Some(Timestamp {
-                seconds: exited_at.timestamp(),
-                nanos: (exited_at.timestamp_nanos() % 1_000_000) as i32,
+                seconds: exited_at.unix_timestamp(),
+                nanos: exited_at.nanosecond() as i32,
                 ..Default::default()
             })
-        } else { None };
+        } else {
+            None
+        };
         let exited_at = SingularPtrField::from_option(exited_at);
         debug_log!(
             "TTRPC call succeeded: state\nid={}, exec_id={}, state={:?}",
@@ -324,13 +325,17 @@ impl shim::Task for Service {
         })
     }
 
-    fn wait(&self, _ctx: &shim::TtrpcContext, _req: WaitRequest) -> shim::ttrpc::Result<WaitResponse> {
+    fn wait(
+        &self,
+        _ctx: &shim::TtrpcContext,
+        _req: WaitRequest,
+    ) -> shim::ttrpc::Result<WaitResponse> {
         debug_log!(
             "TTRPC call: wait\nid={}, exec_id={}",
             _req.get_id(),
             _req.get_exec_id()
         );
-    
+
         let mut c = CONTAINERS.write().unwrap();
         let container = c.get_mut(_req.get_id()).ok_or_else(|| {
             Error::RpcStatus(Status {
@@ -368,8 +373,8 @@ impl shim::Task for Service {
         debug_log!("InitProcess::wait succeeded.");
         let exited_at = match p.exited_at() {
             Some(t) => Some(Timestamp {
-                seconds: t.timestamp(),
-                nanos: (t.timestamp_nanos() % 1_000_000) as i32,
+                seconds: t.unix_timestamp(),
+                nanos: t.nanosecond() as i32,
                 ..Default::default()
             }),
             None => None,
@@ -445,8 +450,8 @@ impl shim::Task for Service {
                 // Might be ugly hack
                 let exited_at = match exited_at {
                     Some(t) => Some(Timestamp {
-                        seconds: t.timestamp(),
-                        nanos: (t.timestamp_nanos() % 1_000_000) as i32,
+                        seconds: t.unix_timestamp(),
+                        nanos: t.nanosecond() as i32,
                         ..Default::default()
                     }),
                     None => None,

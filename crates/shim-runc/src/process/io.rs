@@ -14,11 +14,11 @@
    limitations under the License.
 */
 
-use std::path::Path;
-use std::pin::Pin;
 use std::ffi::OsStr;
 use std::fs::DirBuilder;
 use std::os::unix::fs::DirBuilderExt;
+use std::path::Path;
+use std::pin::Pin;
 use std::process::Command;
 use std::sync::Arc;
 
@@ -257,9 +257,7 @@ async fn copy_pipes(io: Arc<dyn RuncIO>, stdio: &StdioConfig) -> std::io::Result
             });
         } else if let Some(wr) = same_file.take() {
             // debug_log!("pipe is not fifo -> use same file for task...");
-            let _t = tokio::task::spawn(async move {
-                dest(wr, rd, None, ix)
-            });
+            let _t = tokio::task::spawn(async move { dest(wr, rd, None, ix) });
             // debug_log!("task completed");
             continue;
         } else {
@@ -276,9 +274,7 @@ async fn copy_pipes(io: Arc<dyn RuncIO>, stdio: &StdioConfig) -> std::io::Result
                 let _ = same_file.get_or_insert(Box::pin(f));
             }
             let wr = Box::pin(f);
-            let _t = tokio::task::spawn(async move {
-                dest(wr, rd, None, ix).await
-            });
+            let _t = tokio::task::spawn(async move { dest(wr, rd, None, ix).await });
         }
     }
 

@@ -1,6 +1,6 @@
 use std::io;
 
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 
 use super::config::{ExecConfig, StdioConfig};
 use super::state::ProcessState;
@@ -23,7 +23,7 @@ pub trait Process {
     fn id(&self) -> String;
     fn pid(&self) -> isize;
     fn exit_status(&self) -> isize;
-    fn exited_at(&self) -> Option<DateTime<Utc>>;
+    fn exited_at(&self) -> Option<OffsetDateTime>;
     // FIXME: suspended for difficulties
     // fn stdin(&self) -> Option<Fifo>;
     fn stdio(&self) -> StdioConfig;
