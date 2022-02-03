@@ -113,6 +113,7 @@ impl Pipe {
                 Mutex::new(Some(File::from_raw_fd(w))),
             )
         };
+        debug_log!("new pipe: rd={:?}, wr={:?}", rd, wr);
         Ok(Self { rd, wr })
     }
 
@@ -192,6 +193,8 @@ impl RuncPipedIO {
             None
         };
 
+        debug_log!("new piped io:\nstdin={:#?}, stdout={:#?}, stderr={:#?}", stdin, stdout, stderr);
+        debug_log!("now, fds={:#?}", check_fds!());
         Ok(Self {
             stdin,
             stdout,
@@ -254,7 +257,7 @@ impl RuncIO for RuncPipedIO {
             if let Some(f) = &*m {
                 let f = f.try_clone()?;
                 debug_log!("set read end for stdout: {:?}", f);
-                cmd.stdin(f);
+                cmd.stdout(f);
             }
         }
 
@@ -263,9 +266,11 @@ impl RuncIO for RuncPipedIO {
             if let Some(f) = &*m {
                 let f = f.try_clone()?;
                 debug_log!("set read end for stderr: {:?}", f);
-                cmd.stdin(f);
+                cmd.stderr(f);
             }
         }
+        debug_log!("fds: {:#?}", check_fds!());
+
         Ok(())
     }
 
@@ -274,7 +279,7 @@ impl RuncIO for RuncPipedIO {
             let m = p.rd.lock().unwrap();
             if let Some(stdin) = &*m {
                 let f = stdin.try_clone()?;
-                debug_log!("set read end for stdin: {:?}", f);
+                // debug_log!("set read end for stdin: {:?}", f);
                 cmd.stdin(f);
             }
         }
@@ -283,7 +288,7 @@ impl RuncIO for RuncPipedIO {
             let m = p.wr.lock().unwrap();
             if let Some(f) = &*m {
                 let f = f.try_clone()?;
-                debug_log!("set read end for stdout: {:?}", f);
+                // debug_log!("set read end for stdout: {:?}", f);
                 cmd.stdin(f);
             }
         }
@@ -292,10 +297,11 @@ impl RuncIO for RuncPipedIO {
             let m = p.wr.lock().unwrap();
             if let Some(f) = &*m {
                 let f = f.try_clone()?;
-                debug_log!("set read end for stderr: {:?}", f);
+                // debug_log!("set read end for stderr: {:?}", f);
                 cmd.stdin(f);
             }
         }
+        debug_log!("fds={:#?}", check_fds!());
         Ok(())
     }
 

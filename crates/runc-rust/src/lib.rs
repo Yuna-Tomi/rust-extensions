@@ -65,7 +65,7 @@ use crate::utils::{JSON, TEXT};
 
 mod dbg {
     pub use crate::debug::*;
-    pub use crate::debug_log;
+    pub use crate::{debug_log, check_fds};
     pub use std::io::Write as DbgWrite;
 }
 use crate::dbg::*;
@@ -553,7 +553,7 @@ impl RuncAsyncClient {
                 let (tx, rx) = tokio::sync::oneshot::channel::<Exit>();
                 let start = MONITOR.start(cmd, tx, true);
                 let wait = MONITOR.wait(rx);
-                _io.close_after_start();
+                // _io.close_after_start();
                 let (
                     Output {
                         status,
@@ -562,6 +562,8 @@ impl RuncAsyncClient {
                     },
                     _,
                 ) = tokio::try_join!(start, wait).map_err(Error::InvalidCommand)?;
+                _io.close_after_start();
+                debug_log!("fds after create={:#?}", check_fds!());
 
                 let stdout = String::from_utf8(stdout).unwrap();
                 let stderr = String::from_utf8(stderr).unwrap();
