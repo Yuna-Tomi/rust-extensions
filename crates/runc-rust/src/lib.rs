@@ -42,6 +42,7 @@ use std::process::{ExitStatus, Output, Stdio};
 use std::time::Duration;
 
 use tempfile::NamedTempFile;
+use oci_spec::runtime::{Linux, Process};
 
 // suspended for difficulties
 // pub mod console;
@@ -53,7 +54,6 @@ pub mod io;
 pub mod monitor;
 pub mod options;
 mod runc;
-pub mod specs;
 mod utils;
 
 use crate::container::Container;
@@ -61,7 +61,6 @@ use crate::error::Error;
 use crate::events::{Event, Stats};
 use crate::monitor::{DefaultMonitor, Exit, ProcessMonitor};
 use crate::options::*;
-use crate::specs::{LinuxResources, Process};
 use crate::utils::{JSON, TEXT};
 
 mod dbg {
@@ -430,7 +429,7 @@ impl RuncClient {
     }
 
     /// Update a container with the provided resource spec
-    pub fn update(&self, id: &str, resources: &LinuxResources) -> Result<()> {
+    pub fn update(&self, id: &str, resources: &Linux) -> Result<()> {
         let (mut temp_file, file_name): (NamedTempFile, String) =
             utils::make_temp_file_in_runtime_dir()?;
         {
@@ -706,7 +705,7 @@ impl RuncAsyncClient {
     }
 
     /// Update a container with the provided resource spec
-    pub async fn update(&self, id: &str, resources: &LinuxResources) -> Result<()> {
+    pub async fn update(&self, id: &str, resources: &Linux) -> Result<()> {
         let (mut temp_file, file_name): (NamedTempFile, String) =
             utils::make_temp_file_in_runtime_dir()?;
         {
