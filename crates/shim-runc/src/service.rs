@@ -34,6 +34,7 @@ use protos::shim::{
 };
 use runc::options::*;
 use shim::{api, ExitSignal, TtrpcContext, TtrpcResult};
+use shim::ttrpc::{Code, Status, Error};
 
 use chrono::Utc;
 use log::{error, info};
@@ -41,7 +42,6 @@ use once_cell::sync::Lazy;
 use protobuf::well_known_types::Timestamp;
 use protobuf::{RepeatedField, SingularPtrField};
 use sys_mount::UnmountFlags;
-use ttrpc::{Code, Status};
 
 use crate::container::{self, Container};
 use crate::options::oci::Options;
@@ -170,11 +170,10 @@ impl shim::Shim for Service {
 impl shim::Task for Service {
     fn create(
         &self,
-        _ctx: &ttrpc::TtrpcContext,
+        _ctx: &shim::TtrpcContext,
         _req: CreateTaskRequest,
-    ) -> ttrpc::Result<CreateTaskResponse> {
+    ) -> shim::ttrpc::Result<CreateTaskResponse> {
         debug_log!("TTRPC call: create\nid={}", _req.id);
-
         let id = _req.id.clone();
         let unknown_fields = _req.unknown_fields.clone();
         let cached_size = _req.cached_size.clone();
@@ -183,8 +182,7 @@ impl shim::Task for Service {
         let container = match Container::new(_req) {
             Ok(c) => c,
             Err(e) => {
-                debug_log!("container create failed: {:?}", e);
-                return Err(ttrpc::Error::Others(format!(
+                return Err(Error::Others(format!(
                     "container create failed: id={}, err={}",
                     id, e
                 )));
@@ -193,7 +191,7 @@ impl shim::Task for Service {
         let mut c = CONTAINERS.write().unwrap();
         let pid = container.pid() as u32;
         if c.contains_key(&id) {
-            return Err(ttrpc::Error::Others(format!(
+            return Err(Error::Others(format!(
                 "create: container \"{}\" already exists.",
                 id
             )));
@@ -211,19 +209,18 @@ impl shim::Task for Service {
 
     fn start(
         &self,
-        _ctx: &ttrpc::TtrpcContext,
+        _ctx: &shim::TtrpcContext,
         _req: StartRequest,
-    ) -> ttrpc::Result<StartResponse> {
+    ) -> shim::ttrpc::Result<StartResponse> {
         debug_log!(
             "TTRPC call: start\nid={}, exec_id={}",
             _req.get_id(),
             _req.get_exec_id()
         );
         let mut c = CONTAINERS.write().unwrap();
-        debug_log!("request: id={}", _req.get_id());
 
         let container = c.get_mut(_req.get_id()).ok_or_else(|| {
-            ttrpc::Error::RpcStatus(Status {
+            Error::RpcStatus(Status {
                 code: Code::NOT_FOUND,
                 message: "container not created".to_string(),
                 details: RepeatedField::new(),
@@ -235,7 +232,7 @@ impl shim::Task for Service {
         debug_log!("call Container::start()");
         let pid = container.start(&_req).map_err(|_|
             // FIXME: appropriate error mapping
-            ttrpc::error::Error::RpcStatus(Status {
+            Error::RpcStatus(Status {
                 code: Code::UNKNOWN,
                 message: "couldn't start container process.".to_string(),
                 details: RepeatedField::new(),
@@ -251,24 +248,11 @@ impl shim::Task for Service {
         })
     }
 
-    fn exec(
-        &self,
-        _ctx: &::ttrpc::TtrpcContext,
-        _req: ExecProcessRequest,
-    ) -> ::ttrpc::Result<Empty> {
-        debug_log!("TTRPC call: exec");
-        debug_log!("request: id={}", _req.get_id());
-        Err(::ttrpc::Error::RpcStatus(::ttrpc::get_status(
-            ::ttrpc::Code::NOT_FOUND,
-            "/containerd.task.v2.Task/Exec is not supported".to_string(),
-        )))
-    }
-
     fn state(
         &self,
-        _ctx: &ttrpc::TtrpcContext,
+        _ctx: &shim::TtrpcContext,
         _req: StateRequest,
-    ) -> ttrpc::Result<StateResponse> {
+    ) -> shim::ttrpc::Result<StateResponse> {
         debug_log!(
             "TTRPC call: state\nid={}, exec_id={}",
             _req.get_id(),
@@ -277,7 +261,7 @@ impl shim::Task for Service {
 
         let c = CONTAINERS.write().unwrap();
         let container = c.get(_req.get_id()).ok_or_else(|| {
-            ttrpc::Error::RpcStatus(Status {
+            Error::RpcStatus(Status {
                 code: Code::NOT_FOUND,
                 message: "container not created".to_string(),
                 details: RepeatedField::new(),
@@ -288,7 +272,7 @@ impl shim::Task for Service {
 
         let exec_id = _req.get_exec_id();
         let p = container.process(exec_id).map_err(|_| {
-            ttrpc::Error::RpcStatus(Status {
+            Error::RpcStatus(Status {
                 code: Code::NOT_FOUND,
                 message: format!("process {} doesn't exist.", exec_id).to_string(),
                 details: RepeatedField::new(),
@@ -341,16 +325,16 @@ impl shim::Task for Service {
         })
     }
 
-    fn wait(&self, _ctx: &ttrpc::TtrpcContext, _req: WaitRequest) -> ttrpc::Result<WaitResponse> {
+    fn wait(&self, _ctx: &shim::TtrpcContext, _req: WaitRequest) -> shim::ttrpc::Result<WaitResponse> {
         debug_log!(
             "TTRPC call: wait\nid={}, exec_id={}",
             _req.get_id(),
             _req.get_exec_id()
         );
-
+    
         let mut c = CONTAINERS.write().unwrap();
         let container = c.get_mut(_req.get_id()).ok_or_else(|| {
-            ttrpc::Error::RpcStatus(Status {
+            Error::RpcStatus(Status {
                 code: Code::NOT_FOUND,
                 message: "container not created".to_string(),
                 details: RepeatedField::new(),
@@ -361,7 +345,7 @@ impl shim::Task for Service {
 
         let exec_id = _req.get_exec_id();
         let p = container.process_mut(exec_id).map_err(|_| {
-            ttrpc::Error::RpcStatus(Status {
+            Error::RpcStatus(Status {
                 code: Code::NOT_FOUND,
                 message: format!("process {} doesn't exist.", exec_id).to_string(),
                 details: RepeatedField::new(),
@@ -372,7 +356,7 @@ impl shim::Task for Service {
 
         debug_log!("call InitProcess::wait");
         p.wait().map_err(|e| {
-            ttrpc::Error::RpcStatus(Status {
+            Error::RpcStatus(Status {
                 code: Code::NOT_FOUND,
                 message: format!("process {} failed: {}", exec_id, e).to_string(),
                 details: RepeatedField::new(),
@@ -405,13 +389,13 @@ impl shim::Task for Service {
         })
     }
 
-    fn kill(&self, _ctx: &ttrpc::TtrpcContext, _req: KillRequest) -> ttrpc::Result<Empty> {
+    fn kill(&self, _ctx: &shim::TtrpcContext, _req: KillRequest) -> shim::ttrpc::Result<Empty> {
         debug_log!("TTRPC call: kill");
         debug_log!("request: id={}", _req.get_id());
 
         let mut c = CONTAINERS.write().unwrap();
         let container = c.get_mut(_req.get_id()).ok_or_else(|| {
-            ttrpc::Error::RpcStatus(Status {
+            Error::RpcStatus(Status {
                 code: Code::NOT_FOUND,
                 message: "container not created".to_string(),
                 details: RepeatedField::new(),
@@ -421,7 +405,7 @@ impl shim::Task for Service {
         })?;
 
         container.kill(&_req).map_err(|e| {
-            ttrpc::Error::RpcStatus(Status {
+            Error::RpcStatus(Status {
                 code: Code::NOT_FOUND,
                 message: format!("failed to kill the container {}: {}", _req.id, e),
                 details: RepeatedField::new(),
@@ -439,15 +423,15 @@ impl shim::Task for Service {
 
     fn delete(
         &self,
-        _ctx: &ttrpc::TtrpcContext,
+        _ctx: &shim::TtrpcContext,
         _req: DeleteRequest,
-    ) -> ttrpc::Result<DeleteResponse> {
+    ) -> shim::ttrpc::Result<DeleteResponse> {
         debug_log!("TTRPC call: delete");
         debug_log!("request: id={}", _req.get_id());
 
         let mut c = CONTAINERS.write().unwrap();
         let container = c.get_mut(_req.get_id()).ok_or_else(|| {
-            ttrpc::Error::RpcStatus(Status {
+            Error::RpcStatus(Status {
                 code: Code::NOT_FOUND,
                 message: "container not created".to_string(),
                 details: RepeatedField::new(),
@@ -477,7 +461,7 @@ impl shim::Task for Service {
                     cached_size: _req.cached_size,
                 })
             }
-            _ => Err(ttrpc::Error::RpcStatus(Status {
+            _ => Err(Error::RpcStatus(Status {
                 code: Code::NOT_FOUND,
                 message: "failed to delete container.".to_string(),
                 details: RepeatedField::new(),
