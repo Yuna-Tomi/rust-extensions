@@ -25,6 +25,8 @@ use std::sync::{Arc, Mutex};
 
 use futures::executor;
 use log::error;
+use nix::fcntl::OFlag;
+use runc::io::RuncIO;
 use runc::options::KillOpts;
 use runc::RuncAsyncClient;
 use time::OffsetDateTime;
@@ -36,6 +38,8 @@ use super::state::ProcessState;
 use super::traits::{ContainerProcess, InitState, Process};
 use crate::options::oci::Options;
 use crate::utils;
+
+use crate::dbg::*;
 
 /// Init process for a container
 #[derive(Debug)]
@@ -146,26 +150,28 @@ impl InitProcess {
     /// Create the process with the provided config
     pub fn create(&mut self, config: CreateConfig) -> io::Result<()> {
         let pid_file = Path::new(&self.bundle).join("init.pid");
-        let opts = runc::options::CreateOpts {
+        let mut opts = runc::options::CreateOpts {
             pid_file: Some(pid_file.clone()),
             no_pivot: self.no_pivot_root,
             ..Default::default()
         };
 
+        debug_log!("options: {:?}", opts);
         if config.terminal {
             unimplemented!()
             // FIXME: using console is suspended for difficulties
         } else {
             // note that io contains nothing until this time, then we can insert new ProcessIO certainly.
             // FIXME: process io settings is suspended for difficulties
-            // let proc_io = ProcessIO::new(&self.id, self.io_uid, self.io_gid, self.stdio.clone())?;
-            // opts = opts.io(proc_io.io().unwrap());
-            // let _ = self.io.get_or_insert(Arc::new(proc_io));
+            let proc_io = ProcessIO::new(&self.id, self.io_uid, self.io_gid, self.stdio.clone())?;
+            opts = opts.io(proc_io.io().unwrap());
+            let _ = self.io.get_or_insert(Arc::new(proc_io));
         }
 
         // FIXME: apply appropriate error
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         self.wait_block = Some(rx);
+        debug_log!("call create_and_io_preparation...");
         self.create_and_io_preparation(config, opts)?;
         tx.send(()).unwrap(); // notify successfully created.
 
@@ -185,32 +191,84 @@ impl InitProcess {
     fn create_and_io_preparation(
         &mut self,
         config: CreateConfig,
-        opts: runc::options::CreateOpts,
+        mut opts: runc::options::CreateOpts,
     ) -> std::io::Result<()> {
-        self.tokio_runtime.block_on(async {
-            let CreateConfig {
-                id,
-                bundle,
-                // terminal,
-                // stdin,
-                ..
-            } = config;
+        let CreateConfig {
+            id,
+            bundle,
+            terminal,
+            stdin,
+            ..
+        } = config;
+        debug_log!("config: id={}, bundle={}, term={}, stdin={}", id, bundle, terminal, stdin);
+        if terminal {
+            unimplemented!()
+            // opts.console_socket = socket;
+        } else {
+            // if not using terminal, self.io is always Some
+            debug_log!("now: {:?}", self);
+            opts.io = self.io.as_ref().unwrap().io();
+        }
 
+        debug_log!("start tokio runtime from create_and_io_preparation...");
+        let ret = self.tokio_runtime.block_on(async {
+            let mut tasks = vec![];
             let runtime = Arc::clone(&self.runtime);
-            let create =
-                tokio::spawn(async move { runtime.create(&id, bundle, Some(&opts)).await });
+            let create = tokio::spawn(async move {
+                debug_log!("runc create...");
+                runtime.create(&id, bundle, Some(&opts)).await.map_err(|e| {
+                    error!("runc create failed: {}", e);
+                    std::io::ErrorKind::Other.into()
+                })
+            });
+            tasks.push(create);
 
-            // FIXME: need task corresponds to openStdin() in Go
-            // see https://github.com/containerd/containerd/blob/main/pkg/process/init.go#L178
-            // let open_stdin = tokio::spawn(...);
+            let open_stdin = if stdin != "" {
+                let open_stdin = tokio::spawn(async move {
+                    Fifo::open(&stdin, OFlag::O_WRONLY | OFlag::O_NONBLOCK, 0)
+                });
+                Some(open_stdin)
+            } else {
+                None
+            };
 
-            // FIXME: need task corresponds to Copy() in Go
-            // see https://github.com/containerd/containerd/blob/main/pkg/process/init.go#L178
-            // let open_stdin = tokio::spawn(...);
+            let copy_console = if terminal {
+                let copy_console = tokio::spawn(async move {
+                    // unimplemented!();
+                    Ok::<(), std::io::Error>(() /* should retuen console handler */)
+                });
+                Some(copy_console)
+            } else {
+                let proc_io = self.io.clone().unwrap();
+                let copy_io = tokio::spawn(async move {
+                    debug_log!("copy pipes...");
+                    proc_io.copy_pipes().await
+                });
+                tasks.push(copy_io);
+                None
+            };
 
-            create.await?.map_err(|_| std::io::ErrorKind::Other)?;
-            Ok::<(), std::io::Error>(())
-        })
+            for t in tasks {
+                t.await?.map_err(|_| std::io::ErrorKind::Other)?;
+            }
+
+            let stdin = if let Some(t) = open_stdin {
+                Some(t.await??)
+            } else {
+                None
+            };
+
+            let console = if let Some(t) = copy_console {
+                Some(t.await??)
+            } else {
+                None
+            };
+            Ok::<(Option<Fifo>, Option<()>), std::io::Error>((stdin, console))
+        })?;
+        let (stdin, console) = ret;
+        self.stdin = stdin;
+        // self.console = console
+        Ok(())
     }
 
     pub fn start(&mut self) -> io::Result<()> {
