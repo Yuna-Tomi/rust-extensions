@@ -22,11 +22,8 @@ use std::os::unix::fs::DirBuilderExt;
 use std::process::Command;
 use std::sync::Arc;
 
-use containerd_runc_rust as runc;
-
-use runc::io::{IOOption, NullIO, RuncIO, RuncPipedIO};
-
 use nix::fcntl::OFlag;
+use runc::io::{IOOption, NullIO, RuncIO, RuncPipedIO};
 use tokio::io::{AsyncWrite, BufReader, BufWriter};
 use url::{ParseError, Url};
 

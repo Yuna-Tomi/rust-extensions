@@ -20,7 +20,7 @@ pub mod options;
 
 pub use containerd_shim as shim;
 pub use containerd_shim_protos as protos;
-pub use containerd_runc_rust as runc;
+pub use runc;
 
 pub mod v2 {
     pub use crate::service::Service;

@@ -19,7 +19,6 @@ use std::collections::HashMap;
 use std::env;
 use std::sync::RwLock;
 
-use containerd_runc_rust as runc;
 use containerd_shim as shim;
 use containerd_shim_protos as protos;
 
@@ -32,7 +31,6 @@ use protos::shim::{
         WaitRequest, WaitResponse,
     },
 };
-use runc::options::*;
 use shim::{api, ExitSignal, TtrpcContext, TtrpcResult};
 use shim::ttrpc::{Code, Status, Error};
 
@@ -41,6 +39,7 @@ use log::{error, info};
 use once_cell::sync::Lazy;
 use protobuf::well_known_types::Timestamp;
 use protobuf::{RepeatedField, SingularPtrField};
+use runc::options::*;
 use sys_mount::UnmountFlags;
 
 use crate::container::{self, Container};

@@ -23,14 +23,11 @@ use std::io::{self, Read};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use containerd_runc_rust as runc;
-
-use runc::options::KillOpts;
-use runc::RuncAsyncClient;
-
 use chrono::Utc;
 use futures::executor;
 use log::error;
+use runc::options::KillOpts;
+use runc::RuncAsyncClient;
 
 use crate::options::oci::Options;
 use crate::utils;

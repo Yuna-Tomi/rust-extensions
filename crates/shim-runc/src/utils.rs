@@ -18,14 +18,12 @@ use std::io;
 use std::path::Path;
 use std::sync::RwLock;
 
-use containerd_runc_rust as runc;
 use containerd_shim_protos as protos;
-
-use runc::{error::Error, RuncAsyncClient, RuncClient, RuncConfig};
 
 use nix::libc::c_ulong;
 use nix::mount::{MntFlags, MsFlags};
 use once_cell::sync::Lazy;
+use runc::{error::Error, RuncAsyncClient, RuncClient, RuncConfig};
 use sys_mount::{Mount, MountFlags, SupportedFilesystems};
 
 use crate::process::config::MountConfig;
