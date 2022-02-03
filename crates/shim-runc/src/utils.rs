@@ -23,7 +23,7 @@ use containerd_shim_protos as protos;
 use nix::libc::c_ulong;
 use nix::mount::{MntFlags, MsFlags};
 use once_cell::sync::Lazy;
-use runc::{error::Error, RuncAsyncClient, RuncClient, RuncConfig};
+use runc::error::Error;
 use sys_mount::{Mount, MountFlags, SupportedFilesystems};
 
 use crate::dbg::*;
@@ -176,7 +176,7 @@ pub fn new_runc<R, P>(
     namespace: String,
     runtime: &str,
     systemd_cgroup: bool,
-) -> Result<RuncClient, Error>
+) -> Result<runc::Client, Error>
 where
     R: AsRef<str>,
     P: AsRef<Path>,
@@ -190,7 +190,7 @@ where
     let log = path.as_ref().join("log.json");
     let runtime = if runtime == "" { RUNC_NAME } else { runtime };
 
-    RuncConfig::new()
+    runc::Config::new()
         .command(runtime)
         .log(log)
         .log_format_json()
@@ -205,7 +205,7 @@ pub fn new_async_runc<R, P>(
     namespace: String,
     runtime: &str,
     systemd_cgroup: bool,
-) -> Result<RuncAsyncClient, Error>
+) -> Result<runc::AsyncClient, Error>
 where
     R: AsRef<str>,
     P: AsRef<Path>,
@@ -219,7 +219,7 @@ where
     let log = path.as_ref().join("log.json");
     let runtime = if runtime == "" { RUNC_NAME } else { runtime };
 
-    RuncConfig::new()
+    runc::Config::new()
         .command(runtime)
         .log(log)
         .log_format_json()

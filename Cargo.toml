@@ -6,5 +6,5 @@ members = [
     "crates/shim",
     "crates/shim-runc",
     "crates/snapshots",
-    "crates/runc-rust",
+    "crates/runc"
 ]

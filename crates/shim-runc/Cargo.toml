@@ -29,7 +29,7 @@ uuid = { version = "0.8.2", features = ["v4"] }
 
 containerd-shim = { path = "../shim", version = "0.2.0" }
 containerd-shim-protos = { path = "../shim-protos", version = "0.1.2" }
-runc = { path = "../runc-rust", version = "0.1.0" }
+runc = { path = "../runc", version = "0.1.0" }
 
 [build-dependencies]
 ttrpc-codegen = "0.3.0"

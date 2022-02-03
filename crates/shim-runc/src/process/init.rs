@@ -26,9 +26,9 @@ use std::sync::{Arc, Mutex};
 use futures::executor;
 use log::error;
 use nix::fcntl::OFlag;
-use runc::io::RuncIO;
+use runc::io::Io;
 use runc::options::KillOpts;
-use runc::RuncAsyncClient;
+use runc::AsyncClient;
 use time::OffsetDateTime;
 
 use super::config::{CreateConfig, ExecConfig, StdioConfig};
@@ -60,7 +60,7 @@ pub struct InitProcess {
     // console: ???,
     // platform: ???,
     io: Option<Arc<ProcessIO>>,
-    runtime: Arc<RuncAsyncClient>,
+    runtime: Arc<AsyncClient>,
 
     /// The pausing state
     pausing: bool,

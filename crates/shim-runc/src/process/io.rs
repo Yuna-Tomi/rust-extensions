@@ -23,7 +23,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use nix::fcntl::OFlag;
-use runc::io::{IOOption, NullIO, RuncIO, RuncPipedIO};
+use runc::io::{IOOption, NullIo, Io, PipedIo};
 use tokio::io::{AsyncWrite, BufReader, BufWriter};
 use url::{ParseError, Url};
 
@@ -34,7 +34,7 @@ use crate::dbg::*;
 
 #[derive(Debug, Clone, Default)]
 pub struct ProcessIO {
-    pub io: Option<Arc<dyn RuncIO>>,
+    pub io: Option<Arc<dyn Io>>,
     pub uri: Option<Url>,
     pub copy: bool,
     pub stdio: StdioConfig,
@@ -47,9 +47,9 @@ impl ProcessIO {
         io_gid: isize,
         stdio: StdioConfig,
     ) -> std::io::Result<Self> {
-        // Only NullIO is supported now.
+        // Only NullIo is supported now.
         // return Ok(Self {
-        //     io: Some(Arc::new(NullIO::new()?)),
+        //     io: Some(Arc::new(NullIo::new()?)),
         //     copy: false,
         //     stdio,
         //     ..Default::default()
@@ -58,7 +58,7 @@ impl ProcessIO {
         // FIXME: Appropriate IO settings...
         if stdio.is_null() {
             return Ok(Self {
-                io: Some(Arc::new(NullIO::new()?)),
+                io: Some(Arc::new(NullIo::new()?)),
                 copy: false,
                 stdio,
                 ..Default::default()
@@ -78,13 +78,13 @@ impl ProcessIO {
 
         match u.scheme() {
             "fifo" => {
-                let io = Arc::new(RuncPipedIO::new(
-                    io_uid,
-                    io_gid,
+                let io = Arc::new(PipedIo::new(
+                    io_uid as u32,
+                    io_gid as u32,
                     conditional_io_options(&stdio),
                 )?);
                 Ok(Self {
-                    io: Some(io as Arc<dyn RuncIO>),
+                    io: Some(io as Arc<dyn Io>),
                     uri: Some(u),
                     copy: true,
                     stdio,
@@ -94,7 +94,7 @@ impl ProcessIO {
                 // FIXME: appropriate binary io
                 unimplemented!()
                 // Ok(Self {
-                //     io: Some(Box::new(BinaryIO::new("dummy")?) as Box<dyn RuncIO>),
+                //     io: Some(Box::new(BinaryIO::new("dummy")?) as Box<dyn Io>),
                 //     uri: Some(u),
                 //     copy: false,
                 //     stdio,
@@ -114,13 +114,13 @@ impl ProcessIO {
                 let mut stdio = stdio;
                 stdio.stdout = path.to_string_lossy().parse::<String>().unwrap();
                 stdio.stderr = path.to_string_lossy().parse::<String>().unwrap();
-                let io = Arc::new(RuncPipedIO::new(
-                    io_uid,
-                    io_gid,
+                let io = Arc::new(PipedIo::new(
+                    io_uid as u32,
+                    io_gid as u32,
                     conditional_io_options(&stdio),
                 )?);
                 Ok(Self {
-                    io: Some(io as Arc<dyn RuncIO>),
+                    io: Some(io as Arc<dyn Io>),
                     uri: Some(u),
                     copy: true,
                     stdio,
@@ -133,7 +133,7 @@ impl ProcessIO {
 
 // FIXME: suspended
 impl ProcessIO {
-    pub fn io(&self /* , cmd: &mut std::process::Command */) -> Option<Arc<dyn RuncIO>> {
+    pub fn io(&self /* , cmd: &mut std::process::Command */) -> Option<Arc<dyn Io>> {
         if let Some(io) = &self.io {
             Some(io.clone())
         } else {
@@ -158,25 +158,29 @@ pub struct BinaryIO {
 }
 
 // FIXME: suspended for difficulties.
-impl RuncIO for BinaryIO {
+impl Io for BinaryIO {
     fn stdin(&self) -> Option<std::fs::File> {
-        panic!("unimplemented");
+        unimplemented!()
     }
 
     fn stderr(&self) -> Option<std::fs::File> {
-        panic!("unimplemented")
+        unimplemented!()
     }
 
     fn stdout(&self) -> Option<std::fs::File> {
-        panic!("unimplemented")
-    }
-
-    fn close(&self) {
-        panic!("unimplemented")
+        unimplemented!()
     }
 
     fn set(&self, _cmd: &mut Command) -> std::io::Result<()> {
-        panic!("unimplemented")
+        unimplemented!()
+    }
+
+    fn set_tk(&self, _cmd: &mut tokio::process::Command) -> std::io::Result<()> {
+        unimplemented!()
+    }
+
+    fn close_after_start(&self) {
+        unimplemented!()
     }
 }
 
@@ -204,7 +208,7 @@ const FIFO: [&str; 2] = ["stdout", "stderr"];
 // until related process will be deleted. Then this function doesn't "join"
 // Each "copy" on task will continuously copy data between
 // pipe that containered arranged and processIO that connected to runc process
-async fn copy_pipes(io: Arc<dyn RuncIO>, stdio: &StdioConfig) -> std::io::Result<()> {
+async fn copy_pipes(io: Arc<dyn Io>, stdio: &StdioConfig) -> std::io::Result<()> {
     let io_files = vec![io.stdout(), io.stderr()];
 
     // debug_log!("io files: {:?}", io_files);

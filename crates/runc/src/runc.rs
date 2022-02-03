@@ -45,7 +45,7 @@ use crate::dbg::*;
 
 /// Inner struct for runc configuration
 #[derive(Debug, Clone, Default)]
-pub struct RuncConfig {
+pub struct Config {
     /// This field is set to overrides the name of the runc binary. If [`None`], "runc" is used.
     command: Option<PathBuf>,
     /// Path to root directory of container rootfs.
@@ -73,7 +73,7 @@ pub struct RuncConfig {
     timeout: Option<Duration>,
 }
 
-impl RuncConfig {
+impl Config {
     pub fn command<P>(&mut self, command: P)
     where
         P: AsRef<Path>,
