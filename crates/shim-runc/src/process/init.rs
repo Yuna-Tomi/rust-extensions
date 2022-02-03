@@ -266,10 +266,7 @@ impl InitState for InitProcess {
         // while let Some(_) = self.wait_block {} // this produce deadlock because of Mutex of containers at Service
         // self.wait_block = Some(rx);
         // tx.send(()).unwrap(); // notify successfully started.
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        rt.block_on(async {
+        self.tokio_runtime.block_on(async {
             self.runtime.start(&self.id).await.map_err(|e| {
                 error!("runc start failed: {}", e);
                 io::ErrorKind::Other
@@ -281,10 +278,7 @@ impl InitState for InitProcess {
 
     fn delete(&mut self) -> io::Result<()> {
         let _m = self.mu.lock().unwrap();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        rt.block_on(async {
+        self.tokio_runtime.block_on(async {
             self.runtime.delete(&self.id, None).await.map_err(|e| {
                 error!("runc delete failed: {}", e);
                 io::ErrorKind::Other
@@ -313,10 +307,7 @@ impl InitState for InitProcess {
     fn kill(&mut self, sig: u32, all: bool) -> io::Result<()> {
         let _m = self.mu.lock().unwrap();
         let opts = KillOpts { all };
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        rt.block_on(async {
+        self.tokio_runtime.block_on(async {
             self.runtime
                 .kill(&self.id, sig, Some(&opts))
                 .await
