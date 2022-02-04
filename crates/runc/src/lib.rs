@@ -63,7 +63,7 @@ use crate::utils::{JSON, TEXT};
 
 mod dbg {
     pub use crate::debug::*;
-    pub use crate::{debug_log, check_fds};
+    pub use crate::{check_fds, debug_log};
     pub use std::io::Write as DbgWrite;
 }
 use crate::dbg::*;

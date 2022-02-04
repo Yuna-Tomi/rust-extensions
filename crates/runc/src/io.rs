@@ -169,7 +169,12 @@ impl PipedIo {
             None
         };
 
-        debug_log!("new piped io:\nstdin={:#?}, stdout={:#?}, stderr={:#?}", stdin, stdout, stderr);
+        debug_log!(
+            "new piped io:\nstdin={:#?}, stdout={:#?}, stderr={:#?}",
+            stdin,
+            stdout,
+            stderr
+        );
         debug_log!("now, fds={:#?}", check_fds!());
         Ok(Self {
             stdin,

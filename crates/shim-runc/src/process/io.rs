@@ -23,7 +23,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use nix::fcntl::OFlag;
-use runc::io::{IOOption, NullIo, Io, PipedIo};
+use runc::io::{IOOption, Io, NullIo, PipedIo};
 use tokio::io::{AsyncWrite, BufReader, BufWriter};
 use url::{ParseError, Url};
 
@@ -226,9 +226,7 @@ async fn copy_pipes(io: Arc<dyn Io>, stdio: &StdioConfig) -> std::io::Result<()>
                     let f = tokio::fs::File::from_std(f);
                     let mut reader = BufReader::new(f);
                     use std::panic::set_hook;
-                    set_hook(Box::new(|e|
-                        log::error!("panic on copy pipe: {}", e)
-                    ));
+                    set_hook(Box::new(|e| log::error!("panic on copy pipe: {}", e)));
                     debug_log!("{} reader: {:?}\ncloser: {:?}", FIFO[ix], reader, closer);
                     let x = tokio::io::copy(&mut reader, &mut *writer).await?;
                     debug_log!("{} copy: {} bytes", FIFO[ix], x);
@@ -245,18 +243,18 @@ async fn copy_pipes(io: Arc<dyn Io>, stdio: &StdioConfig) -> std::io::Result<()>
         };
         // might be ugly hack
         if fifo::is_fifo(&path)? {
-            let w_fifo = Fifo::open(&path, OFlag::O_WRONLY, 0).map_err(|e| {
-                debug_log!("error in make w_fifo {}", e);
-                e
-            })?;
-
-            let r_fifo = Fifo::open(&path, OFlag::O_RDONLY, 0).map_err(|e| {
-                debug_log!("error in make w_fifo {}", e);
-                e
-            })?;
-            let wr = Box::pin(w_fifo);
-            let cl = Some(r_fifo);
             let _t = tokio::task::spawn(async move {
+                let w_fifo = Fifo::open(&path, OFlag::O_WRONLY, 0).await.map_err(|e| {
+                    debug_log!("error in make w_fifo {}", e);
+                    e
+                })?;
+
+                let r_fifo = Fifo::open(&path, OFlag::O_RDONLY, 0).await.map_err(|e| {
+                    debug_log!("error in make w_fifo {}", e);
+                    e
+                })?;
+                let wr = Box::pin(w_fifo);
+                let cl = Some(r_fifo);
                 debug_log!(
                     "spawn task with fifo...\nread end: {:?}\nwrite end: {:?}",
                     wr,
@@ -284,18 +282,17 @@ async fn copy_pipes(io: Arc<dyn Io>, stdio: &StdioConfig) -> std::io::Result<()>
             let wr = Box::pin(f);
             let _t = tokio::task::spawn(async move {
                 use std::panic::set_hook;
-                set_hook(Box::new(|e|
-                    log::error!("panic on stdin copy pipe: {}", e)
-                ));
+                set_hook(Box::new(|e| log::error!("panic on stdin copy pipe: {}", e)));
                 dest(wr, rd, None, ix).await
             });
         }
     }
 
-    let io = io.clone();
     if stdio.stdin != "" {
-        let f = Fifo::open(&stdio.stdin, OFlag::O_RDONLY | OFlag::O_NONBLOCK, 0)?;
+        let io = io.clone();
+        let stdin = stdio.stdin.clone();
         let copy_buf = async move {
+            let f = Fifo::open(&stdin, OFlag::O_RDONLY | OFlag::O_NONBLOCK, 0).await?;
             let stdin = io.stdin().unwrap();
             let stdin = tokio::fs::File::from_std(stdin);
             debug_log!("stdin write end: {:?}\nstdin read end: {:?}", stdin, f);

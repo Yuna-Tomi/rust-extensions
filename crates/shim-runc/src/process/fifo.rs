@@ -36,9 +36,10 @@ use crate::dbg::*;
 #[derive(Debug)]
 pub struct Fifo {
     flag: OFlag,
-    file: Option<tokio::fs::File>,
+    // file: Option<tokio::fs::File>,
+    file: tokio::fs::File,
     handle: Handler,
-    opened: Option<Receiver<tokio::fs::File>>,
+    // opened: Option<Receiver<tokio::fs::File>>,
 }
 
 impl Fifo {
@@ -54,7 +55,7 @@ impl Fifo {
     ///     fifo isn't open. read/write will be connected after the actual fifo is
     ///     open or after fifo is closed.
     #[rustfmt::skip]
-    pub fn open<P>(path: P, mut flag: OFlag, perm: u32) -> std::io::Result<Self>
+    pub async fn open<P>(path: P, mut flag: OFlag, perm: u32) -> std::io::Result<Self>
     where
         P: AsRef<Path>,
     {
@@ -83,30 +84,27 @@ impl Fifo {
             _ => {}
         }
         opts.mode(0).custom_flags(flag.bits());
+        let file = opts.open(&path).await?;
 
         // FIXME:
         // following Go's implementation, we have to prepare file on other thread.
-        let (tx, open_rx) = oneshot::channel::<tokio::fs::File>();
-        tokio::spawn(async move {
-            let f = opts.open(&path).await.map_err(|e| 
-                debug_log!("error in fifo setting: {}", e)
-            ).unwrap();
-            tx.send(f).unwrap();
-        });
+        // let (tx, open_rx) = oneshot::channel::<tokio::fs::File>();
+        // tokio::spawn(async move {
+        //     let f = opts.open(&path).await.map_err(|e| 
+        //         debug_log!("error in fifo setting: path={} {}", path, e)
+        //     ).unwrap();
+        //     tx.send(f).unwrap();
+        // });
         // FIXME:
         if block {}
         Ok(Self {
             flag,
-            file: None,
-            opened: Some(open_rx),
+            file,
+            // opened: Some(open_rx),
             // closing,
             // closed,
             handle,
         })
-    }
-
-    pub fn close(&self) -> std::io::Result<()> {
-        self.handle.close()
     }
 }
 
@@ -115,42 +113,44 @@ impl AsyncWrite for Fifo {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), std::io::Error>> {
-        let this = self.get_mut();
-        if let Some(f) = &mut this.file {
-            Pin::new(f).poll_flush(cx)
-        } else {
-            let f = match this.opened.as_mut().unwrap().try_recv() {
-                Ok(f) => f,
-                Err(TryRecvError::Empty) => {
-                    cx.waker().wake_by_ref();
-                    return std::task::Poll::Pending;
-                }
-                Err(TryRecvError::Closed) => panic!("channel closed."),
-            };
-            this.file.get_or_insert(f);
-            Pin::new(&mut this.file.as_mut().unwrap()).poll_flush(cx)
-        }
+        // let this = self.get_mut();
+        // if let Some(f) = &mut this.file {
+        //     Pin::new(f).poll_flush(cx)
+        // } else {
+        //     let f = match this.opened.as_mut().unwrap().try_recv() {
+        //         Ok(f) => f,
+        //         Err(TryRecvError::Empty) => {
+        //             cx.waker().wake_by_ref();
+        //             return std::task::Poll::Pending;
+        //         }
+        //         Err(TryRecvError::Closed) => panic!("channel closed."),
+        //     };
+        //     this.file.get_or_insert(f);
+        //     Pin::new(&mut this.file.as_mut().unwrap()).poll_flush(cx)
+        // }
+        Pin::new(&mut self.get_mut().file).poll_flush(cx)
     }
 
     fn poll_shutdown(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
-        let this = self.get_mut();
-        if let Some(f) = &mut this.file {
-            Pin::new(f).poll_shutdown(cx)
-        } else {
-            let f = match this.opened.as_mut().unwrap().try_recv() {
-                Ok(f) => f,
-                Err(TryRecvError::Empty) => {
-                    cx.waker().wake_by_ref();
-                    return std::task::Poll::Pending;
-                }
-                Err(TryRecvError::Closed) => panic!("channel closed."),
-            };
-            this.file.get_or_insert(f);
-            Pin::new(&mut this.file.as_mut().unwrap()).poll_shutdown(cx)
-        }
+        // let this = self.get_mut();
+        // if let Some(f) = &mut this.file {
+        //     Pin::new(f).poll_shutdown(cx)
+        // } else {
+        //     let f = match this.opened.as_mut().unwrap().try_recv() {
+        //         Ok(f) => f,
+        //         Err(TryRecvError::Empty) => {
+        //             cx.waker().wake_by_ref();
+        //             return std::task::Poll::Pending;
+        //         }
+        //         Err(TryRecvError::Closed) => panic!("channel closed."),
+        //     };
+        //     this.file.get_or_insert(f);
+        //     Pin::new(&mut this.file.as_mut().unwrap()).poll_shutdown(cx)
+        // }
+        Pin::new(&mut self.get_mut().file).poll_shutdown(cx)
     }
 
     fn poll_write(
@@ -158,21 +158,22 @@ impl AsyncWrite for Fifo {
         cx: &mut std::task::Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, std::io::Error>> {
-        let this = self.get_mut();
-        if let Some(f) = &mut this.file {
-            Pin::new(f).poll_write(cx, buf)
-        } else {
-            let f = match this.opened.as_mut().unwrap().try_recv() {
-                Ok(f) => f,
-                Err(TryRecvError::Empty) => {
-                    cx.waker().wake_by_ref();
-                    return std::task::Poll::Pending;
-                }
-                Err(TryRecvError::Closed) => panic!("channel closed."),
-            };
-            this.file.get_or_insert(f);
-            Pin::new(&mut this.file.as_mut().unwrap()).poll_write(cx, buf)
-        }
+        // let this = self.get_mut();
+        // if let Some(f) = &mut this.file {
+        //     Pin::new(f).poll_write(cx, buf)
+        // } else {
+        //     let f = match this.opened.as_mut().unwrap().try_recv() {
+        //         Ok(f) => f,
+        //         Err(TryRecvError::Empty) => {
+        //             cx.waker().wake_by_ref();
+        //             return std::task::Poll::Pending;
+        //         }
+        //         Err(TryRecvError::Closed) => panic!("channel closed."),
+        //     };
+        //     this.file.get_or_insert(f);
+        //     Pin::new(&mut this.file.as_mut().unwrap()).poll_write(cx, buf)
+        // }
+        Pin::new(&mut self.get_mut().file).poll_write(cx, buf)
     }
 
     fn poll_write_vectored(
@@ -180,21 +181,23 @@ impl AsyncWrite for Fifo {
         cx: &mut std::task::Context<'_>,
         bufs: &[std::io::IoSlice<'_>],
     ) -> Poll<Result<usize, std::io::Error>> {
-        let this = self.get_mut();
-        if let Some(f) = &mut this.file {
-            Pin::new(f).poll_write_vectored(cx, bufs)
-        } else {
-            let f = match this.opened.as_mut().unwrap().try_recv() {
-                Ok(f) => f,
-                Err(TryRecvError::Empty) => {
-                    cx.waker().wake_by_ref();
-                    return std::task::Poll::Pending;
-                }
-                Err(TryRecvError::Closed) => panic!("channel closed."),
-            };
-            this.file.get_or_insert(f);
-            Pin::new(&mut this.file.as_mut().unwrap()).poll_write_vectored(cx, bufs)
-        }
+        // let this = self.get_mut();
+        // if let Some(f) = &mut this.file {
+        //     Pin::new(f).poll_write_vectored(cx, bufs)
+        // } else {
+        //     let f = match this.opened.as_mut().unwrap().try_recv() {
+        //         Ok(f) => f,
+        //         Err(TryRecvError::Empty) => {
+        //             cx.waker().wake_by_ref();
+        //             return std::task::Poll::Pending;
+        //         }
+        //         Err(TryRecvError::Closed) => panic!("channel closed."),
+        //     };
+        //     this.file.get_or_insert(f);
+        //     Pin::new(&mut this.file.as_mut().unwrap()).poll_write_vectored(cx, bufs)
+        // }
+
+        Pin::new(&mut self.get_mut().file).poll_write_vectored(cx, bufs)
     }
 }
 
@@ -204,21 +207,22 @@ impl AsyncRead for Fifo {
         cx: &mut std::task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
-        let this = self.get_mut();
-        if let Some(f) = &mut this.file {
-            Pin::new(f).poll_read(cx, buf)
-        } else {
-            let f = match this.opened.as_mut().unwrap().try_recv() {
-                Ok(f) => f,
-                Err(TryRecvError::Empty) => {
-                    cx.waker().wake_by_ref();
-                    return std::task::Poll::Pending;
-                }
-                Err(TryRecvError::Closed) => panic!("channel closed."),
-            };
-            this.file.get_or_insert(f);
-            Pin::new(&mut this.file.as_mut().unwrap()).poll_read(cx, buf)
-        }
+        // let this = self.get_mut();
+        // if let Some(f) = &mut this.file {
+        //     Pin::new(f).poll_read(cx, buf)
+        // } else {
+        //     let f = match this.opened.as_mut().unwrap().try_recv() {
+        //         Ok(f) => f,
+        //         Err(TryRecvError::Empty) => {
+        //             cx.waker().wake_by_ref();
+        //             return std::task::Poll::Pending;
+        //         }
+        //         Err(TryRecvError::Closed) => panic!("channel closed."),
+        //     };
+        //     this.file.get_or_insert(f);
+        //     Pin::new(&mut this.file.as_mut().unwrap()).poll_read(cx, buf)
+        // }
+        Pin::new(&mut self.get_mut().file).poll_read(cx, buf)
     }
 }
 

@@ -200,7 +200,13 @@ impl InitProcess {
             stdin,
             ..
         } = config;
-        debug_log!("config: id={}, bundle={}, term={}, stdin={}", id, bundle, terminal, stdin);
+        debug_log!(
+            "config: id={}, bundle={}, term={}, stdin={}",
+            id,
+            bundle,
+            terminal,
+            stdin
+        );
         if terminal {
             unimplemented!()
             // opts.console_socket = socket;
@@ -225,7 +231,7 @@ impl InitProcess {
 
             let open_stdin = if stdin != "" {
                 let open_stdin = tokio::spawn(async move {
-                    Fifo::open(&stdin, OFlag::O_WRONLY | OFlag::O_NONBLOCK, 0)
+                    Fifo::open(&stdin, OFlag::O_WRONLY | OFlag::O_NONBLOCK, 0).await
                 });
                 Some(open_stdin)
             } else {
