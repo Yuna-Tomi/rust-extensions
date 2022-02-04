@@ -36,7 +36,6 @@ pub trait ProcessMonitor {
         &self,
         mut cmd: tokio::process::Command,
         tx: Sender<Exit>,
-        forget: bool,
     ) -> std::io::Result<Output> {
         debug_log!("command spawn... {:?}", cmd);
         let chi = cmd.spawn()?;
@@ -55,9 +54,6 @@ pub trait ProcessMonitor {
         }) {
             Ok(_) => {
                 debug_log!("command and notification succeeded: {:?}", out);
-                if forget {
-                    std::mem::forget(cmd);
-                }
                 Ok(out)
             }
             Err(e) => {
