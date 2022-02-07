@@ -309,7 +309,7 @@ impl shim::Task for Service {
             .collect();
 
         if let Err(e) = self.send_event(
-            "create",
+            protos::topics::TASK_CREATE_EVENT_TOPIC,
             protos::events::task::TaskCreate {
                 container_id: _req.id,
                 bundle: _req.bundle,
@@ -375,7 +375,7 @@ impl shim::Task for Service {
                 unimplemented!()
             }
             if let Err(e) = self.send_event(
-                "start",
+                protos::topics::TASK_START_EVENT_TOPIC,
                 protos::events::task::TaskStart {
                     container_id: container.id(),
                     pid: pid as u32,
@@ -386,7 +386,7 @@ impl shim::Task for Service {
             }
         } else {
             if let Err(e) = self.send_event(
-                "exec started",
+                protos::topics::TASK_EXEC_STARTED_EVENT_TOPIC,
                 protos::events::task::TaskExecStarted {
                     container_id: container.id(),
                     exec_id: _req.exec_id,
@@ -618,7 +618,7 @@ impl shim::Task for Service {
                 };
 
                 if let Err(e) = self.send_event(
-                    "exec started",
+                    protos::topics::TASK_DELETE_EVENT_TOPIC,
                     protos::events::task::TaskDelete {
                         container_id: container.id(),
                         pid: pid as u32,
