@@ -255,7 +255,7 @@ impl shim::Task for Service {
         let cached_size = _req.cached_size.clone();
         // FIXME: error handling
         debug_log!("call Container::new()");
-        let container = match Container::new(_req) {
+        let container = match Container::new(_req.clone()) {
             Ok(c) => c,
             Err(e) => {
                 return Err(Error::Others(format!(
@@ -273,6 +273,54 @@ impl shim::Task for Service {
             )));
         } else {
             let _ = c.insert(id, container);
+        }
+
+        let task_io = SingularPtrField::from_option(Some(protos::events::task::TaskIO {
+            stdin: _req.stdin,
+            stdout: _req.stdout,
+            stderr: _req.stderr,
+            terminal: _req.terminal,
+            ..Default::default()
+        }));
+
+        // this might be redundant but we have to do this
+        // due to duplicate mount.rs in protos::events and protos::shim
+        let rootfs = _req
+            .rootfs
+            .into_iter()
+            .map(|m| {
+                let protos::shim::mount::Mount {
+                    field_type,
+                    source,
+                    target,
+                    options,
+                    unknown_fields,
+                    cached_size,
+                } = m;
+                protos::events::mount::Mount {
+                    field_type,
+                    source,
+                    target,
+                    options,
+                    unknown_fields,
+                    cached_size,
+                }
+            })
+            .collect();
+
+        if let Err(e) = self.send_event(
+            "create",
+            protos::events::task::TaskCreate {
+                container_id: _req.id,
+                bundle: _req.bundle,
+                rootfs,
+                io: task_io,
+                checkpoint: _req.checkpoint,
+                pid: pid as u32,
+                ..Default::default()
+            },
+        ) {
+            error!("failed to publish TaskCreate: {}", e);
         }
 
         debug_log!("TTRPC call succeeded: create\npid={}", pid);
@@ -567,6 +615,19 @@ impl shim::Task for Service {
                         ..Default::default()
                     }),
                     None => None,
+                };
+
+                if let Err(e) = self.send_event(
+                    "exec started",
+                    protos::events::task::TaskDelete {
+                        container_id: container.id(),
+                        pid: pid as u32,
+                        exit_status: exit_status as u32,
+                        exited_at: SingularPtrField::from_option(exited_at.clone()),
+                        ..Default::default()
+                    },
+                ) {
+                    error!("failed to publish TaskDelete: {}", e);
                 };
 
                 Ok(DeleteResponse {

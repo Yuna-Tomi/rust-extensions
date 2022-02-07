@@ -14,8 +14,8 @@
    limitations under the License.
 */
 
-use std::sync::{Arc, Mutex};
 use std::io;
+use std::sync::{Arc, Mutex};
 
 use containerd_shim as shim;
 
@@ -43,5 +43,4 @@ impl Watcher for WatcherV1 {
     fn add(&self, id: String, namespace: String, cg: Arc<dyn Hierarchy>) -> io::Result<()> {
         unimplemented!()
     }
-
 }
