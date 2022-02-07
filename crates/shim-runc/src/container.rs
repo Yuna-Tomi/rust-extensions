@@ -31,6 +31,9 @@ use protos::shim::{
     },
 };
 
+use cgroups_rs as cgroup;
+
+use cgroup::Hierarchy;
 use nix::errno::Errno;
 use nix::sys::stat;
 use nix::unistd;
@@ -57,7 +60,7 @@ pub struct Container {
     id: String,
     bundle: String,
     // FIXME: cgroup settings
-    // cgroup: impl protos::api:: ,
+    cgroup: Option<Arc<dyn Hierarchy>>,
     /// This container's process itself. (e.g. init process)
     process_self: InitProcess,
     /// processes running inside this container.
@@ -169,17 +172,23 @@ impl Container {
         let pid = init.pid();
         debug_log!("init successfully created: pid={}", pid);
 
-        if pid > 0 {
-            // FIXME: setting config for cgroup
-        }
+        let cg = if pid > 0 {
+            Some(cgroup::hierarchies::auto().into())
+        } else {
+            None
+        };
 
         Ok(Container {
             mu: Arc::default(),
             id,
             bundle,
+            cgroup: cg,
             process_self: init,
             processes: HashMap::new(),
         })
+    }
+    pub fn id(&self) -> String {
+        self.id.clone()
     }
 
     pub fn all(&self) {
@@ -195,14 +204,14 @@ impl Container {
         self.process_self.pid()
     }
 
-    pub fn cgroup(&self) /* -> [] */
-    {
-        unimplemented!()
+    pub fn cgroup(&self) -> Option<Arc<dyn Hierarchy>> {
+        let _m = self.mu.lock().unwrap();
+        self.cgroup.clone()
     }
 
-    pub fn cgroup_set(&self) /* -> [] */
-    {
-        unimplemented!()
+    pub fn set_cgroup(&mut self, cg: impl Into<Arc<dyn Hierarchy>>) {
+        let _m = self.mu.lock().unwrap();
+        let _ = self.cgroup.get_or_insert(cg.into());
     }
 
     pub fn reserve_process(&self) {

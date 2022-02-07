@@ -29,6 +29,7 @@ pub mod v2 {
 
 mod container;
 mod debug;
+mod oom;
 mod process;
 mod service;
 mod utils;

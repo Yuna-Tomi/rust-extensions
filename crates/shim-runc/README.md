@@ -19,8 +19,10 @@ sudo ctr run -d --rm --runtime /path/to/shim docker.io/library/nginx:alpine <con
     - wait
     - kill
     - delete
-- IO utilities are **not** supported now.
-    - Thus, we cannot provide input into nor extract out/err from container.
+- IO utilities are **partially** supported now.
+    - Thus, we cannot use terminal
+        - i.e. detach new-terminal mode is not available: see Runc's [terminals.md](https://github.com/opencontainers/runc/blob/f99d252d2bf7416599b8a87f9d91b3c0f96bf593/docs/terminals.md) 
+        - This will be supported after console implementation in runc crate completes.
     - However, there are skeleton codes in `src/process`
         - `io.rs` and `fifo.rs`
         - Go couterparts are [process](https://github.com/containerd/containerd/tree/main/pkg/process) and [fifo](https://github.com/containerd/fifo).

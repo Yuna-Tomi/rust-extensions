@@ -16,7 +16,8 @@
 
 use std::collections::HashMap;
 use std::env;
-use std::sync::RwLock;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex, RwLock};
 
 use containerd_shim as shim;
 use containerd_shim_protos as protos;
@@ -30,19 +31,25 @@ use protos::shim::{
         WaitResponse,
     },
 };
+use protos::Events;
 use shim::ttrpc::{Code, Error, Status};
-use shim::{api, ExitSignal, TtrpcContext, TtrpcResult};
+use shim::{api, ExitSignal, RemotePublisher, TtrpcContext, TtrpcResult};
 
+use cgroups_rs as cgroup;
+
+use cgroup::Hierarchy;
 use log::{error, info};
 use once_cell::sync::Lazy;
 use protobuf::well_known_types::Timestamp;
-use protobuf::{RepeatedField, SingularPtrField};
+use protobuf::{Message, RepeatedField, SingularPtrField};
 use runc::options::*;
 use sys_mount::UnmountFlags;
 use time::OffsetDateTime;
+use ttrpc::context::Context;
 
 use crate::container::{self, Container};
 use crate::dbg::*;
+use crate::oom::{v2::WatcherV2, Watcher};
 use crate::options::oci::Options;
 use crate::process::state::ProcessState;
 use crate::utils;
@@ -74,8 +81,75 @@ pub struct Service {
     runtime_id: String,
     /// Container id
     id: String,
-    namespace: String,
     exit: ExitSignal,
+    namespace: String,
+    event_manager: Arc<EventManager>,
+}
+
+struct EventManager {
+    // unlike go's implementation, we don't need event_send_mutex
+    // because publisher needs to be in mutex due to Sync trait bound.
+    publisher: Arc<Mutex<shim::RemotePublisher>>,
+    oom_watcher: Arc<dyn Watcher>,
+}
+
+impl Service {
+    fn send_event(&self, topic: &str, event: impl Message) -> Result<(), shim::Error> {
+        self.event_manager
+            .send(topic.to_string(), self.namespace.clone(), event)
+    }
+
+    fn add_oom_event(&self, cg: Arc<dyn Hierarchy>) -> std::io::Result<()> {
+        self.event_manager
+            .add_oom_event(self.id.clone(), self.namespace.clone(), cg)
+    }
+}
+
+impl EventManager {
+    fn new(publisher: RemotePublisher) -> Self {
+        // note that watcher never need to run() again
+        // then this Service needs only immutable reference to Watcher.
+        let publisher = Arc::new(Mutex::new(publisher));
+        let oom_watcher = if cgroup::hierarchies::is_cgroup2_unified_mode() {
+            let mut watcher = WatcherV2::new();
+            watcher.run(publisher.clone()).unwrap();
+            Arc::new(watcher) as Arc<dyn Watcher>
+        } else {
+            // FIXME: support cgroup v1 OOM watcher
+            unimplemented!()
+        };
+        Self {
+            publisher,
+            oom_watcher,
+        }
+    }
+
+    // due to publisher's implementation, we cannot publish event topic from tokio task
+    // because RemotePublisher take args in static dispatch (impl Message) and such event
+    // cannot be send via channel
+    // then, this method just publish topic in blocking way, on the main thread.
+    fn send(
+        &self,
+        topic: String,
+        namespace: String,
+        event: impl Message,
+    ) -> Result<(), shim::Error> {
+        let ctx = Context::default();
+        self.publisher
+            .lock()
+            .unwrap()
+            .publish(ctx, &topic, &namespace, event)
+            .map_err(|e| e.into())
+    }
+
+    fn add_oom_event(
+        &self,
+        id: String,
+        namespace: String,
+        cg: Arc<dyn Hierarchy>,
+    ) -> std::io::Result<()> {
+        self.oom_watcher.add(id, namespace, cg)
+    }
 }
 
 impl shim::Shim for Service {
@@ -93,12 +167,16 @@ impl shim::Shim for Service {
         let id = _id.to_string();
         let namespace = _namespace.to_string();
         let exit = ExitSignal::default();
+        let event_manager = Arc::new(EventManager::new(_publisher));
+
         debug_log!("shim service successfully created.");
+
         Self {
             runtime_id,
             id,
             namespace,
             exit,
+            event_manager,
         }
     }
 
@@ -237,6 +315,40 @@ impl shim::Task for Service {
                 unknown_fields: _req.unknown_fields.clone(),
                 cached_size: _req.cached_size.clone(),
         }))?;
+
+        if _req.exec_id == "" {
+            let cg = container.cgroup().unwrap();
+            if cg.v2() {
+                // FIXME: appropreate controling
+                if let Err(e) = self.add_oom_event(cg) {
+                    error!("failed to add OOM event: {}", e);
+                }
+            } else {
+                unimplemented!()
+            }
+            if let Err(e) = self.send_event(
+                "start",
+                protos::events::task::TaskStart {
+                    container_id: container.id(),
+                    pid: pid as u32,
+                    ..Default::default()
+                },
+            ) {
+                error!("failed to publish TaskStart: {}", e);
+            }
+        } else {
+            if let Err(e) = self.send_event(
+                "exec started",
+                protos::events::task::TaskExecStarted {
+                    container_id: container.id(),
+                    exec_id: _req.exec_id,
+                    pid: pid as u32,
+                    ..Default::default()
+                },
+            ) {
+                error!("failed to publish TaskExecStarted: {}", e);
+            };
+        }
 
         debug_log!("TTRPC call succeeded: start");
         Ok(StartResponse {
