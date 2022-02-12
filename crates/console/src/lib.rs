@@ -15,26 +15,23 @@
 */
 
 mod ioctl;
-mod tc;
 
 #[cfg(feature = "tokio_imp")]
 mod tokio_imp;
 
 #[cfg(feature = "futures_imp")]
-mod futures_imp;
+pub mod futures_imp;
 
-use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
-use std::os::unix::prelude::{AsRawFd, FromRawFd, IntoRawFd, OpenOptionsExt};
-use std::pin::Pin;
+use std::os::unix::prelude::{AsRawFd, FromRawFd, IntoRawFd};
 use std::sync::Arc;
-use std::{fs::File, os::unix::prelude::RawFd};
+use std::os::unix::prelude::RawFd;
 
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::libc::c_ushort;
-use nix::pty::{self, OpenptyResult, PtyMaster};
-use nix::sys::termios::{self, ControlFlags, InputFlags, LocalFlags, OutputFlags, SetArg, Termios};
+use nix::pty::{self, OpenptyResult};
+use nix::sys::termios::{self, LocalFlags, SetArg, Termios};
 use thiserror::Error;
 
 type Result<T> = std::result::Result<T, Error>;
@@ -115,36 +112,38 @@ impl<F: AsRawFd> Console for Master<F> {
         ioctl::set_winsize(self.fd(), &size.into())
     }
 
-    #[cfg(not(any(target_os = "solaris", target_os = "illumos")))]
-    fn set_raw(&self) -> Result<()> {
-        let mut cur = termios::tcgetattr(self.fd())?;
-        termios::cfmakeraw(&mut cur);
-        Ok(())
-    }
+    // #[cfg(not(any(target_os = "solaris", target_os = "illumos")))]
+    // fn set_raw(&self) -> Result<()> {
+    //     let mut cur = termios::tcgetattr(self.fd())?;
+    //     termios::cfmakeraw(&mut cur);
+    //     Ok(())
+    // }
 
-    #[cfg(any(target_os = "solaris", target_os = "illumos"))]
+    // #[cfg(any(target_os = "solaris", target_os = "illumos"))]
     fn set_raw(&self) -> Result<()> {
         use nix::libc;
+        use nix::sys::termios::{ControlFlags, InputFlags, OutputFlags};
+
         let mut cur = termios::tcgetattr(self.fd())?;
-        self.original.input_flags &= !(InputFlags::BRKINT
+        cur.input_flags &= !(InputFlags::BRKINT
             | InputFlags::ICRNL
             | InputFlags::INLCR
             | InputFlags::IGNCR
             | InputFlags::INPCK
             | InputFlags::ISTRIP
             | InputFlags::IXON);
-        self.original.output_flags &= !OutputFlags::OPOST;
-        self.original.local_flags &= !(LocalFlags::ECHO
+        cur.output_flags &= !OutputFlags::OPOST;
+        cur.local_flags &= !(LocalFlags::ECHO
             | LocalFlags::ECHOE
             | LocalFlags::ECHONL
             | LocalFlags::ICANON
             | LocalFlags::IEXTEN
             | LocalFlags::ISIG);
-        self.original.control_flags &= !(ControlFlags::PARENB | ControlFlags::CSIZE);
-        self.original.control_flags |= ControlFlags::CS8;
+        cur.control_flags &= !(ControlFlags::PARENB | ControlFlags::CSIZE);
+        cur.control_flags |= ControlFlags::CS8;
         // VMIN/VTIME in nix cannot be used as index now, using ones in libc instead.
-        self.original.control_chars[libc::VMIN] = 1;
-        self.original.control_chars[libc::VTIME] = 0;
+        cur.control_chars[libc::VMIN] = 1;
+        cur.control_chars[libc::VTIME] = 0;
         termios::tcsetattr(self.fd(), SetArg::TCSANOW, &cur)?;
         Ok(())
     }
@@ -229,7 +228,8 @@ pub fn get_current<F: AsRawFd + FromRawFd>() -> Result<Master<F>> {
 }
 
 /// create new pty pair
-/// Return value is [`Master`] that contains the master side and [`File`] of slave.
+/// Return value is [`Master`] that contains the master side and [`F`] of slave.
+/// Note that this internally uses [`openpty(3)`] and slave end is already opened when this function returns (and has succeeded)
 pub fn new_pty_pair<F: AsRawFd + FromRawFd>() -> Result<(Master<F>, F)> {
     // let mst = pty::posix_openpt(OFlag::O_RDWR | OFlag::O_NOCTTY | OFlag::O_CLOEXEC )?;
     // pty::grantpt(&mst)?;
@@ -248,15 +248,43 @@ pub fn new_pty_pair<F: AsRawFd + FromRawFd>() -> Result<(Master<F>, F)> {
     Ok((mst, slv))
 }
 
-// #[cfg(target_os = "linux")]
-// fn ptsname(fd: &PtyMaster) -> nix::Result<String> {
-//     pty::ptsname_r(fd)
-// }
+#[cfg(not(target_os = "linux"))]
+use {
+    once_cell::sync::Lazy,
+    std::sync::Mutex,
+};
+#[cfg(not(target_os = "linux"))]
+static PTSNAME_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+/// This uses posix_openpt(3), grantpt(3), unlockpt(3) and ptsname(3) (on Linux, [`ptsname_r(3)`] instead.)
+/// When this function returns, slave end is not opened ever.
+pub fn new_pty_pair2<F: AsRawFd + FromRawFd>() -> Result<(Master<F>, String)> {
+    let mst = pty::posix_openpt(OFlag::O_RDWR | OFlag::O_NOCTTY | OFlag::O_CLOEXEC)?;
+    pty::grantpt(&mst)?;
+    pty::unlockpt(&mst)?;
+
+    #[cfg(not(target_os = "linux"))]
+    let slv = {
+        // ptsname is MT-unsafe (mutates the file path placed in global field), then take mutex here
+        let _m = PTSNAME_MUTEX.lock().unwrap();
+        unsafe { pty::ptsname(&mst)? }
+    };
+
+    #[cfg(target_os = "linux")]
+    let slv = pty::ptsname_r(&mst)?;
+
+    let mst = unsafe { F::from_raw_fd(mst.into_raw_fd()) };
+    // FIXME: internal tcgetattr(3) in this fails on macOS, while isattr(fd of mst) returns 1(true).
+    let mst = Master::new(mst)?;
+    Ok((mst, slv))
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
     use std::io::{BufRead, BufReader};
+    use std::thread;
 
     #[test]
     fn test() {
@@ -275,19 +303,31 @@ mod tests {
     #[test]
     fn test2() {
         let (mst, mut slv) = new_pty_pair::<File>().expect("cannot allocat pty.");
+        let t1 = thread::spawn(move || {
+            let msg = "Hello, console!\n".to_string();
+            let msg2 = "For containerd!\n".to_string();
+            slv.write_all(msg.as_bytes())
+                .expect("cannot write message.");
+            slv.write_all(msg2.as_bytes())
+                .expect("cannot write message.");
+        });
 
-        let msg = "Hello, console!\n".to_string();
-        let msg2 = "For containerd!\n".to_string();
-        slv.write_all(msg.as_bytes())
-            .expect("cannot write message.");
-        slv.write_all(msg2.as_bytes())
-            .expect("cannot write message.");
+        let t2 = thread::spawn(move || {
+            let mut msg = String::new();
+            let mut msg2 = String::new();
+            let mut mst = BufReader::new(mst);
+            // NOTE: if you sleep here for even 1 sec, it will lost data on macOS
+            // but will not in Linux when sleep for even 5 sec.
+            // The author didn't find reason now and is middle of survey...
+            // pty is platform sensitive and these test have to make sure
+            // this crate works well if user use it correctly
+            mst.read_line(&mut msg).expect("cannot read message.");
+            mst.read_line(&mut msg2).expect("cannot read message 2.");
+            (msg, msg2)
+        });
 
-        let mut msg = String::new();
-        let mut msg2 = String::new();
-        let mut mst = BufReader::new(mst);
-        mst.read_line(&mut msg).expect("cannot read message.");
-        mst.read_line(&mut msg2).expect("cannot read message 2.");
+        t1.join().unwrap();
+        let (msg, msg2) = t2.join().unwrap();
         assert_eq!("Hello, console!\r\n", msg);
         assert_eq!("For containerd!\r\n", msg2);
     }

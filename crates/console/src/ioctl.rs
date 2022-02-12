@@ -22,7 +22,7 @@ use nix::libc;
 use std::mem::MaybeUninit;
 use std::os::unix::prelude::RawFd;
 
-use crate::{Result, WinSize};
+use crate::Result;
 
 pub fn get_winsize(fd: RawFd) -> Result<nix::pty::Winsize> {
     let mut size = MaybeUninit::<nix::pty::Winsize>::uninit();
