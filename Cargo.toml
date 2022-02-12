@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/client",
+    "crates/console",
     "crates/logging",
     "crates/shim-protos",
     "crates/shim",
